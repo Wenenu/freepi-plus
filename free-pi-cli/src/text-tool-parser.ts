@@ -194,17 +194,53 @@ export function extractTextToolCalls(text: string): ParseResult {
     }
   });
 
-  // 4. Direct <bash>...</bash>, <read>...</read>, <ls>...</ls>, etc. tags
-  const directTagRegex = /<(bash|read|edit|write|grep|find|ls)(?:\s+[^>]*)?>([\s\S]*?)<\/\1>/gi;
-  cleanText = cleanText.replace(directTagRegex, (_, tagName, content) => {
-    const toolName = tagName.toLowerCase();
+  // 4. Self-closing tool calls: <bash_command cmd="..." /> or <bash cmd="..." />
+  const selfClosingRegex = /<(bash(?:_command)?|read|edit|write|grep|find|ls)\s+([^>]*?)\s*\/>/gi;
+  cleanText = cleanText.replace(selfClosingRegex, (_, rawTagName, attrString) => {
+    const toolName = normalizeToolName(rawTagName.replace(/_command$/i, ""));
+    const rawArgs: Record<string, any> = {};
+
+    const attrRegex = /([a-zA-Z0-9_-]+)=["']([^"']*)["']/g;
+    let aMatch: RegExpExecArray | null;
+    let hasAttrs = false;
+    while ((aMatch = attrRegex.exec(attrString)) !== null) {
+      hasAttrs = true;
+      rawArgs[aMatch[1]] = aMatch[2];
+    }
+
+    if (hasAttrs) {
+      toolCalls.push({
+        type: "toolCall",
+        id: generateToolCallId(),
+        name: toolName,
+        arguments: normalizeArguments(toolName, rawArgs),
+      });
+      return "";
+    }
+    return _;
+  });
+
+  // 5. Direct or paired <bash>...</bash>, <bash_command>...</bash_command>
+  const directTagRegex = /<(bash(?:_command)?|read|edit|write|grep|find|ls)(\s+[^>]*)?>([\s\S]*?)<\/\1>/gi;
+  cleanText = cleanText.replace(directTagRegex, (_, tagName, attrString, content) => {
+    const toolName = normalizeToolName(tagName.replace(/_command$/i, ""));
     const rawArgs: Record<string, any> = {};
     const trimmed = content.trim();
 
+    if (attrString) {
+      const attrRegex = /([a-zA-Z0-9_-]+)=["']([^"']*)["']/g;
+      let aMatch: RegExpExecArray | null;
+      while ((aMatch = attrRegex.exec(attrString)) !== null) {
+        rawArgs[aMatch[1]] = aMatch[2];
+      }
+    }
+
     if (toolName === "bash") {
-      rawArgs["command"] = trimmed;
+      if (!rawArgs["command"] && !rawArgs["cmd"]) {
+        rawArgs["command"] = trimmed;
+      }
     } else if (toolName === "read" || toolName === "ls") {
-      rawArgs["path"] = trimmed;
+      if (!rawArgs["path"]) rawArgs["path"] = trimmed;
     } else if (toolName === "grep" || toolName === "find") {
       const parts = trimmed.split(/\s+/);
       if (parts.length > 1) {

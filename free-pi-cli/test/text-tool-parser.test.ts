@@ -71,6 +71,26 @@ find /root/workspace -name "*.md"
     expect(res.toolCalls[0].arguments).toEqual({ path: "README.md" });
   });
 
+  test("parses <bash_command cmd='...' /> and <bash_command cmd='...'>...</bash_command>", () => {
+    const input = `
+Let me explore:
+<bash_command cmd="ls -la /root/workspace/ && cat /root/workspace/bugbounty/AGENTS.md" />
+And then:
+<bash_command cmd="cd /root/workspace/bugbounty && ls -la"></bash_command>
+`;
+    const res = extractTextToolCalls(input);
+    expect(res.hasToolCalls).toBe(true);
+    expect(res.toolCalls).toHaveLength(2);
+    expect(res.toolCalls[0].name).toBe("bash");
+    expect(res.toolCalls[0].arguments).toEqual({
+      command: "ls -la /root/workspace/ && cat /root/workspace/bugbounty/AGENTS.md",
+    });
+    expect(res.toolCalls[1].name).toBe("bash");
+    expect(res.toolCalls[1].arguments).toEqual({
+      command: "cd /root/workspace/bugbounty && ls -la",
+    });
+  });
+
   test("does nothing for regular text without tool calls", () => {
     const input = "Here is an explanation of the code.";
     const res = extractTextToolCalls(input);
