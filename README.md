@@ -11,6 +11,8 @@ A hardened, quality-of-life-enhanced fork of [free-pi-cli](https://github.com/ea
 | Auto-continue after threshold-based context compaction | ✅ |
 | Ctrl+C ignored — agent can't be killed mid-task accidentally | ✅ |
 | Auto-executes text tool calls (`<bash>`, DSML, `<invoke>`, JSON) | ✅ |
+| Antseed P2P auto-fallback on quota exhaustion (429 / daily cap) | ✅ |
+| `antseed_deposit_usdc` built-in tool to fund inference balance | ✅ |
 
 ---
 

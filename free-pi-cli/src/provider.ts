@@ -80,3 +80,32 @@ export function buildProviderConfig(
     })),
   };
 }
+
+export const ANTSEED_DEFAULT_MODELS: CatalogModel[] = [
+  { id: "deepseek/deepseek-chat", name: "DeepSeek Chat (Antseed P2P)" },
+  { id: "deepseek/deepseek-reasoner", name: "DeepSeek Reasoner (Antseed P2P)" },
+  { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B (Antseed P2P)" },
+  { id: "anthropic/claude-3-5-sonnet", name: "Claude 3.5 Sonnet (Antseed P2P)" },
+];
+
+export function buildAntseedProviderConfig(
+  baseUrl: string = "http://127.0.0.1:8377",
+  models: CatalogModel[] = ANTSEED_DEFAULT_MODELS,
+): ProviderConfig {
+  return {
+    name: "antseed",
+    baseUrl: completionsBaseUrl(baseUrl),
+    apiKey: "antseed-local",
+    api: "openai-completions",
+    models: models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      reasoning: m.id.includes("reasoner") || m.id.includes("r1"),
+      input: ["text"] as const,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 131_072,
+      maxTokens: 8192,
+    })),
+  };
+}
+

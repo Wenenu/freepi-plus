@@ -33,6 +33,7 @@ export function resolveFreePiScope(
   providerName: string,
   modelIds: string[],
   env: Record<string, string | undefined> = process.env,
+  additionalModels: Array<{ provider: string; id: string }> = [],
 ): ScopedModel[] {
   if (env.FREEPI_KEEP_ENV_PROVIDERS) return [];
   const scoped: ScopedModel[] = [];
@@ -40,5 +41,10 @@ export function resolveFreePiScope(
     const model = modelRuntime.getModel(providerName, id);
     if (model) scoped.push({ model });
   }
+  for (const extra of additionalModels) {
+    const model = modelRuntime.getModel(extra.provider, extra.id);
+    if (model) scoped.push({ model });
+  }
   return scoped;
 }
+

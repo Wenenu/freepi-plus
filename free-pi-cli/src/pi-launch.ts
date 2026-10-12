@@ -13,7 +13,15 @@ import { createAdsExtension } from "@freepi/pi-ads";
 import { readFileSync } from "node:fs";
 import { accountsDir, loadAccountInfo, resolveActiveAccountId } from "./accounts";
 import { join, resolve } from "node:path";
-import { buildProviderConfig, MODEL_ID, PROVIDER_NAME, SAFE_TOOLS, type CatalogModel } from "./provider";
+import {
+  buildProviderConfig,
+  buildAntseedProviderConfig,
+  MODEL_ID,
+  PROVIDER_NAME,
+  SAFE_TOOLS,
+  type CatalogModel,
+  ANTSEED_DEFAULT_MODELS,
+} from "./provider";
 import { createUsageToolExtension, USAGE_TOOL_NAME } from "./usage-tool";
 import { createBuyToolExtension, BUY_TOOL_NAME } from "./buy-tool";
 import { createDocsToolExtension, DOCS_TOOL_NAME } from "./docs-tool";
@@ -24,6 +32,8 @@ import { createHeaderExtension } from "./header";
 import { resolveFreePiScope } from "./provider-lock";
 import { patchResumeLine } from "./resume-line";
 import { extractTextToolCalls } from "./text-tool-parser";
+import { ANTSEED_DEPOSIT_TOOL_NAME, ANTSEED_PROVIDER_NAME } from "./antseed";
+import { createAntseedDepositToolExtension } from "./antseed-deposit-tool";
 
 export interface LaunchOptions {
   baseUrl: string;
@@ -59,7 +69,13 @@ function catalogModelsFor(opts: LaunchOptions): CatalogModel[] {
 //      `--tools` flag, "only the listed tool names are enabled").
 //   2. Passed to the tool-guard extension, which blocks + reports anything
 //      outside this set that still somehow reaches a tool_call event.
-export const ALLOWED_TOOL_NAMES: readonly string[] = [...SAFE_TOOLS, USAGE_TOOL_NAME, BUY_TOOL_NAME, DOCS_TOOL_NAME];
+export const ALLOWED_TOOL_NAMES: readonly string[] = [
+  ...SAFE_TOOLS,
+  USAGE_TOOL_NAME,
+  BUY_TOOL_NAME,
+  DOCS_TOOL_NAME,
+  ANTSEED_DEPOSIT_TOOL_NAME,
+];
 
 export interface RuntimeBuildOptions {
   settingsManager: SettingsManager;
@@ -107,14 +123,45 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     name: "free-pi-provider",
     factory: (pi: ExtensionAPI) => {
       pi.registerProvider(PROVIDER_NAME, buildProviderConfig(opts.baseUrl, opts.jwt, sessionId, models));
+      pi.registerProvider(ANTSEED_PROVIDER_NAME, buildAntseedProviderConfig());
+
       pi.on("before_provider_headers", (event) => {
-        const token = getCurrentToken();
-        event.headers["authorization"] = `Bearer ${token}`;
-        event.headers["Authorization"] = `Bearer ${token}`;
+        // Only attach FreePI bearer auth when talking to free-pi provider
+        if (event.provider === PROVIDER_NAME) {
+          const token = getCurrentToken();
+          event.headers["authorization"] = `Bearer ${token}`;
+          event.headers["Authorization"] = `Bearer ${token}`;
+        }
       });
       pi.on("message_end", (event, ctx) => {
         const message = event.message;
         if (message.role !== "assistant") return;
+
+        // Auto-fallback to Antseed when FreePI quota / daily usage is exhausted
+        if (message.stopReason === "error") {
+          const errorMessage = message.errorMessage ?? "";
+          if (
+            (message.provider === PROVIDER_NAME || ctx.model?.provider === PROVIDER_NAME) &&
+            (errorMessage.includes("429") ||
+              errorMessage.includes("daily_cap") ||
+              errorMessage.includes("quota") ||
+              errorMessage.includes("limit_exceeded"))
+          ) {
+            const antseedModel = ANTSEED_DEFAULT_MODELS[0]!.id;
+            try {
+              (ctx as any).model = { provider: ANTSEED_PROVIDER_NAME, id: antseedModel };
+              ctx.ui.notify(
+                `FreePI quota exhausted. Automatically switched inference to Antseed P2P (${antseedModel}).`,
+                "warning",
+              );
+              pi.sendUserMessage("Continue with the task using Antseed", { deliverAs: "followUp" });
+            } catch {
+              // fallback notification if auto-switch fails
+            }
+            return;
+          }
+        }
+
         if (message.provider !== PROVIDER_NAME && ctx.model?.provider !== PROVIDER_NAME) return;
 
         if (message.stopReason === "error") {
@@ -261,6 +308,8 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
   // docs — see provider.ts). Pi ships with none of those by default, so
   // there is nothing else to turn off — free-pi-cli's job is to never opt
   // back into them.
+  const antseedDepositToolExtension: InlineExtension = createAntseedDepositToolExtension();
+
   const extensionFactories = [
     providerExtension,
     adsExtension,
@@ -271,6 +320,7 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     toolGuardExtension,
     commandsExtension,
     headerExtension,
+    antseedDepositToolExtension,
   ];
 
   const settingsManager = SettingsManager.inMemory({
@@ -367,9 +417,9 @@ export async function launchPi(opts: LaunchOptions): Promise<string> {
       settingsManager,
       resourceLoaderOptions,
     });
-    // Lock the model picker to just the free-pi catalog models — pi's own
-    // model-scope, no env vars touched. See provider-lock.ts.
-    const scopedModels = resolveFreePiScope(services.modelRuntime, PROVIDER_NAME, scopeIds);
+    // Lock the model picker to free-pi catalog models plus Antseed fallback models
+    const antseedScoped = ANTSEED_DEFAULT_MODELS.map((m) => ({ provider: ANTSEED_PROVIDER_NAME, id: m.id }));
+    const scopedModels = resolveFreePiScope(services.modelRuntime, PROVIDER_NAME, scopeIds, process.env, antseedScoped);
     return {
       ...(await createAgentSessionFromServices({
         services,
