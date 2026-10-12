@@ -15,42 +15,77 @@ A hardened, quality-of-life-enhanced fork of [free-pi-cli](https://github.com/ea
 
 ## Quick start
 
+One script works on both Windows and Linux: **`setup.ps1`** (PowerShell).
+
 ### Windows
 
-```bat
+PowerShell is built-in — just clone and run:
+
+```powershell
 git clone https://github.com/Wenenu/freepi-plus.git
 cd freepi-plus
-setup.bat
+powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
 ### Linux / macOS
 
+Install PowerShell Core first (one-time, ~30 seconds):
+
+```bash
+# Ubuntu / Debian
+sudo apt-get install -y powershell
+
+# Arch
+sudo pacman -S powershell
+
+# macOS
+brew install --cask powershell
+```
+
+Then clone and run:
+
 ```bash
 git clone https://github.com/Wenenu/freepi-plus.git
 cd freepi-plus
-bash setup.sh
+pwsh setup.ps1
 ```
 
-Both scripts install **Node.js 22** and **bun** automatically if they're missing, then launch the agent. On every subsequent run they skip straight to launch (dependency check is near-instant).
+---
+
+## What `setup.ps1` does
+
+1. **Detects your OS** automatically (Windows / Linux / macOS)
+2. **Installs Node.js 22 LTS** via `winget` (Windows) or `nvm` (Linux/macOS) — skipped if already installed
+3. **Installs bun** — skipped if already installed
+4. **Installs npm dependencies** (`bun install`)
+5. **Creates a global `freepi` command** you can run from any directory:
+   - **Windows**: `freepi.cmd` in `%LOCALAPPDATA%\freepi-plus\`, added to your User PATH
+   - **Linux/macOS**: `freepi` shell script in `~/.local/bin/`
+
+After setup, open a **new terminal** and run from any directory:
+
+```
+freepi
+```
 
 ---
 
 ## Requirements
 
-| Tool | Installed by setup script? |
+| Tool | Installed automatically? |
 |---|---|
-| Node.js ≥ 22.15 | ✅ auto-installed |
-| bun | ✅ auto-installed |
-| git | must be pre-installed |
-| Internet | GitHub OAuth + free-pi API |
+| Node.js ≥ 22.15 | ✅ |
+| bun | ✅ |
+| PowerShell (`pwsh`) | Windows: built-in · Linux: see above |
+| git | Must be pre-installed |
 
 ---
 
 ## How it works
 
-Authentication is done via GitHub OAuth (device flow). Your token is stored in `~/.free-pi/agent/` — completely separate from any existing `~/.pi/agent` installation.
+Authentication is via GitHub OAuth (device flow). Your token is stored in `~/.free-pi/agent/` — separate from any existing `~/.pi/agent` installation.
 
-Inference is paid for by ads shown in the terminal. You never need a model API key.
+Inference is paid for by ads shown in the terminal. No model API key needed.
 
 ---
 
@@ -58,11 +93,11 @@ Inference is paid for by ads shown in the terminal. You never need a model API k
 
 ```bash
 cd free-pi-cli
-bun test        # 279 tests, ~15s, no network
-bun run build   # produces dist/ (Node-bundled, for npm publish)
+bun test        # 279 tests, ~15s, no network required
+bun run build   # produces dist/ (bundled for npm publish)
 ```
 
 Override the backend:
 ```bash
-FREEPI_BASE_URL=http://localhost:3000 bash setup.sh
+FREEPI_BASE_URL=http://localhost:3000 freepi
 ```
