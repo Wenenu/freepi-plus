@@ -447,7 +447,41 @@ export function runCompact(ctx: NotifyContext): Promise<void> {
 
 // ---- /provider ------------------------------------------------------------
 
-export async function showProvider(ctx: NotifyContext, targetProvider?: string): Promise<void> {
+async function applyModelSwitch(
+  provider: string,
+  modelId: string,
+  ctx: NotifyContext,
+  pi?: ExtensionAPI,
+): Promise<boolean> {
+  // Production: use pi.setModel (the proper, non-readonly API)
+  if (pi && typeof pi.setModel === "function") {
+    const registry = (ctx as any).modelRegistry;
+    let targetModel = registry?.find ? registry.find(provider, modelId) : undefined;
+    if (!targetModel) {
+      targetModel = { provider, id: modelId };
+    }
+    try {
+      await pi.setModel(targetModel);
+      return true;
+    } catch {
+      // fall through to direct assignment below
+    }
+  }
+  // Fallback: direct assignment (works in tests and older SDK contexts)
+  try {
+    (ctx as any).model = { provider, id: modelId };
+    return true;
+  } catch {
+    // truly readonly — nothing we can do
+  }
+  return false;
+}
+
+export async function showProvider(
+  ctx: NotifyContext,
+  targetProvider?: string,
+  pi?: ExtensionAPI,
+): Promise<void> {
   const providers = [
     {
       id: "free-pi",
@@ -469,9 +503,7 @@ export async function showProvider(ctx: NotifyContext, targetProvider?: string):
   if (arg) {
     const match = providers.find((p) => p.id === arg || p.id.replace("-", "") === arg);
     if (match) {
-      if ((ctx as any).model) {
-        (ctx as any).model = { provider: match.id, id: match.defaultModel };
-      }
+      await applyModelSwitch(match.id, match.defaultModel, ctx, pi);
       ctx.ui.notify(
         `Switched active provider to ${match.name}.\nDefault model: ${match.defaultModel}\n${match.desc}`,
         "info",
@@ -496,9 +528,7 @@ export async function showProvider(ctx: NotifyContext, targetProvider?: string):
       const idx = parseInt(matchIdx[1], 10) - 1;
       const chosen = providers[idx];
       if (chosen) {
-        if ((ctx as any).model) {
-          (ctx as any).model = { provider: chosen.id, id: chosen.defaultModel };
-        }
+        await applyModelSwitch(chosen.id, chosen.defaultModel, ctx, pi);
         ctx.ui.notify(
           `Switched active provider to ${chosen.name}.\nDefault model: ${chosen.defaultModel}`,
           "info",
@@ -523,6 +553,7 @@ export async function showModel(
   opts: CreateCommandsOptions,
   ctx: NotifyContext,
   targetModel?: string,
+  pi?: ExtensionAPI,
 ): Promise<void> {
   const currentProvider = (ctx as any).model?.provider || "free-pi";
   const currentModelId = (ctx as any).model?.id;
@@ -543,9 +574,7 @@ export async function showModel(
         m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
     );
     if (match) {
-      if ((ctx as any).model) {
-        (ctx as any).model = { provider: currentProvider, id: match.id };
-      }
+      await applyModelSwitch(currentProvider, match.id, ctx, pi);
       ctx.ui.notify(
         `Switched model to "${match.name}" (${match.id}) on provider [${currentProvider}].`,
         "info",
@@ -562,9 +591,7 @@ export async function showModel(
         m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
     );
     if (otherMatch) {
-      if ((ctx as any).model) {
-        (ctx as any).model = { provider: otherProvider, id: otherMatch.id };
-      }
+      await applyModelSwitch(otherProvider, otherMatch.id, ctx, pi);
       ctx.ui.notify(
         `Switched provider to [${otherProvider}] and model to "${otherMatch.name}" (${otherMatch.id}).`,
         "info",
@@ -593,9 +620,7 @@ export async function showModel(
       const idx = parseInt(matchIdx[1], 10) - 1;
       const chosen = availableModels[idx];
       if (chosen) {
-        if ((ctx as any).model) {
-          (ctx as any).model = { provider: currentProvider, id: chosen.id };
-        }
+        await applyModelSwitch(currentProvider, chosen.id, ctx, pi);
         ctx.ui.notify(
           `Switched model to "${chosen.name}" (${chosen.id}) on provider [${currentProvider}].`,
           "info",
@@ -675,11 +700,11 @@ export function createFreePiCommandsExtension(opts: CreateCommandsOptions): Inli
       });
       pi.registerCommand("provider", {
         description: "Switch active inference provider (free-pi or antseed P2P network).",
-        handler: async (args, ctx) => showProvider(ctx, args),
+        handler: async (args, ctx) => showProvider(ctx, args, pi),
       });
       pi.registerCommand("model", {
         description: "Select model for the active provider.",
-        handler: async (args, ctx) => showModel(opts, ctx, args),
+        handler: async (args, ctx) => showModel(opts, ctx, args, pi),
       });
     },
   };
