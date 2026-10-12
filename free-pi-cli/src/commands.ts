@@ -9,6 +9,7 @@ import { CHANGELOG_HIGHLIGHTS } from "./changelog";
 import { openBrowser } from "./browser";
 import { BUY_NOT_AVAILABLE_TEXT, buyPageText, resolveBuyPage } from "./buy-tool";
 import { fetchUsageText } from "./usage-tool";
+import { type CatalogModel, ANTSEED_DEFAULT_MODELS, MODEL_ID } from "./provider";
 import { join } from "node:path";
 import {
   listAccounts,
@@ -42,6 +43,10 @@ export interface CreateCommandsOptions {
   /** KTD7: reads the click URL of the banner ad currently shown, set by
    * pi-ads' onBannerAd callback. Undefined when no ad is shown. */
   getAdvertiserUrl?: () => string | undefined;
+  /** Selectable free-pi models */
+  models?: CatalogModel[];
+  /** Selectable antseed models */
+  antseedModels?: CatalogModel[];
 }
 
 /** Minimal shape of the command context we use — notify and optional interactive UI methods. */
@@ -512,6 +517,104 @@ export async function showProvider(ctx: NotifyContext, targetProvider?: string):
   ctx.ui.notify(text.trimEnd(), "info");
 }
 
+// ---- /model ---------------------------------------------------------------
+
+export async function showModel(
+  opts: CreateCommandsOptions,
+  ctx: NotifyContext,
+  targetModel?: string,
+): Promise<void> {
+  const currentProvider = (ctx as any).model?.provider || "free-pi";
+  const currentModelId = (ctx as any).model?.id;
+
+  const freePiModels: CatalogModel[] =
+    opts.models && opts.models.length > 0 ? opts.models : [{ id: MODEL_ID, name: MODEL_ID }];
+  const antseedModels: CatalogModel[] =
+    opts.antseedModels && opts.antseedModels.length > 0 ? opts.antseedModels : ANTSEED_DEFAULT_MODELS;
+
+  const availableModels = currentProvider === "antseed" ? antseedModels : freePiModels;
+
+  const arg = targetModel?.trim().toLowerCase();
+  if (arg) {
+    const match = availableModels.find(
+      (m) =>
+        m.id.toLowerCase() === arg ||
+        m.name.toLowerCase() === arg ||
+        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
+    );
+    if (match) {
+      if ((ctx as any).model) {
+        (ctx as any).model = { provider: currentProvider, id: match.id };
+      }
+      ctx.ui.notify(
+        `Switched model to "${match.name}" (${match.id}) on provider [${currentProvider}].`,
+        "info",
+      );
+      return;
+    }
+    // Also check if the model belonged to the other provider
+    const otherProvider = currentProvider === "antseed" ? "free-pi" : "antseed";
+    const otherModels = otherProvider === "antseed" ? antseedModels : freePiModels;
+    const otherMatch = otherModels.find(
+      (m) =>
+        m.id.toLowerCase() === arg ||
+        m.name.toLowerCase() === arg ||
+        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
+    );
+    if (otherMatch) {
+      if ((ctx as any).model) {
+        (ctx as any).model = { provider: otherProvider, id: otherMatch.id };
+      }
+      ctx.ui.notify(
+        `Switched provider to [${otherProvider}] and model to "${otherMatch.name}" (${otherMatch.id}).`,
+        "info",
+      );
+      return;
+    }
+
+    ctx.ui.notify(
+      `Unknown model "${targetModel}" for provider [${currentProvider}]. Available models: ${availableModels.map((m) => m.id).join(", ")}`,
+      "error",
+    );
+    return;
+  }
+
+  if (typeof ctx.ui.select === "function") {
+    const options = availableModels.map((m, i) => {
+      const active = m.id === currentModelId ? " [active]" : "";
+      return `${i + 1}. ${m.name}${active} (${m.id})`;
+    });
+
+    const selected = await ctx.ui.select(`Select Model for [${currentProvider}]`, options);
+    if (!selected) return;
+
+    const matchIdx = selected.match(/^(\d+)\./);
+    if (matchIdx && matchIdx[1]) {
+      const idx = parseInt(matchIdx[1], 10) - 1;
+      const chosen = availableModels[idx];
+      if (chosen) {
+        if ((ctx as any).model) {
+          (ctx as any).model = { provider: currentProvider, id: chosen.id };
+        }
+        ctx.ui.notify(
+          `Switched model to "${chosen.name}" (${chosen.id}) on provider [${currentProvider}].`,
+          "info",
+        );
+      }
+    }
+    return;
+  }
+
+  // Fallback text
+  let text = `Current Provider: [${currentProvider}]\nCurrent Model: ${currentModelId ?? "default"}\n\nAvailable Models for ${currentProvider}:\n`;
+  for (const m of availableModels) {
+    const active = m.id === currentModelId ? " (current)" : "";
+    text += `  • ${m.name} (${m.id})${active}\n`;
+  }
+  text += `\nTo switch model: /model <model-id>\nTo change provider: /provider`;
+  ctx.ui.notify(text, "info");
+}
+
 // ---- /usage ---------------------------------------------------------------
 
 /** Same output as the free_pi_usage tool, with no model turn — works at the wall. Never throws. */
@@ -573,6 +676,10 @@ export function createFreePiCommandsExtension(opts: CreateCommandsOptions): Inli
       pi.registerCommand("provider", {
         description: "Switch active inference provider (free-pi or antseed P2P network).",
         handler: async (args, ctx) => showProvider(ctx, args),
+      });
+      pi.registerCommand("model", {
+        description: "Select model for the active provider.",
+        handler: async (args, ctx) => showModel(opts, ctx, args),
       });
     },
   };

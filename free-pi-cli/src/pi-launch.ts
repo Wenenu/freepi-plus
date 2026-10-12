@@ -291,6 +291,8 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     baseUrl: opts.baseUrl,
     getToken: getCurrentToken,
     getAdvertiserUrl: () => advertiserUrl,
+    models,
+    antseedModels: ANTSEED_DEFAULT_MODELS,
   });
 
   // U1/U2 (2026-09-03): free-pi's own startup header, replacing pi's

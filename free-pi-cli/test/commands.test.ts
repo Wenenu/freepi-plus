@@ -8,6 +8,7 @@ import {
   openTos,
   PRIVACY_URL,
   runUpdate,
+  showModel,
   showProvider,
   showUsage,
   showWhatsNew,
@@ -332,5 +333,33 @@ describe("/provider (showProvider)", () => {
     expect(notes[0]?.msg).toContain("Available Providers");
     expect(notes[0]?.msg).toContain("free-pi");
     expect(notes[0]?.msg).toContain("antseed");
+  });
+});
+
+describe("/model (showModel)", () => {
+  test("switches model for current provider with argument", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "antseed", id: "deepseek-v4-flash" };
+    await showModel({ baseUrl: "https://api.test", getToken: () => "jwt" }, ctx as any, "deepseek/deepseek-chat");
+    expect((ctx as any).model.id).toBe("deepseek/deepseek-chat");
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect(notes[0]?.msg).toContain("Switched model to");
+  });
+
+  test("switches both provider and model if model belongs to the other provider", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    await showModel({ baseUrl: "https://api.test", getToken: () => "jwt" }, ctx as any, "deepseek-v4-flash");
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect((ctx as any).model.id).toBe("deepseek-v4-flash");
+    expect(notes[0]?.msg).toContain("Switched provider to [antseed]");
+  });
+
+  test("shows model list when called without argument", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "antseed", id: "deepseek-v4-flash" };
+    await showModel({ baseUrl: "https://api.test", getToken: () => "jwt" }, ctx as any);
+    expect(notes[0]?.msg).toContain("Available Models for antseed");
+    expect(notes[0]?.msg).toContain("DeepSeek V4.1 Flash");
   });
 });
