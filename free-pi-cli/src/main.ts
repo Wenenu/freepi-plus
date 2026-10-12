@@ -72,16 +72,32 @@ async function main(): Promise<void> {
     process.exit(logoutCode);
   }
 
+  const rpc = command.mode === "rpc";
+  // In rpc mode stdout is the wire protocol: a single stray line corrupts the
+  // JSONL stream a client is parsing, so every human-facing message goes to
+  // stderr there (the panel shows stderr as the agent's log).
+  const log = rpc ? (message: string) => console.error(message) : (message: string) => console.log(message);
+
   const agentDir = getFreePiAgentDir();
   const code = await run({
     baseUrl: resolveBaseUrl(),
     agentDir,
     credentialsPath: getLegacyCredentialsPath(agentDir),
-    promptConsent: promptConsentInteractive,
+    // The consent screen reads stdin, which in rpc mode is the command channel:
+    // an embedding client cannot answer it, so an un-consented install is told
+    // to run the CLI once in a terminal instead of having its input consumed.
+    promptConsent: rpc
+      ? async () => {
+          log(
+            "free-pi-cli --mode rpc needs a sign-in this install does not have. Run `free-pi-cli` once in a terminal first (consent + sign-in), then start rpc mode.",
+          );
+          return false;
+        }
+      : promptConsentInteractive,
     openBrowser,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    launchPi,
-    log: (message) => console.log(message),
+    launchPi: (opts) => launchPi({ ...opts, mode: command.mode }),
+    log,
     checkClientVersion,
     maybeSelfUpdate: (action, latest) =>
       maybeSelfUpdate(action, latest, {
@@ -89,7 +105,7 @@ async function main(): Promise<void> {
         autoUpdateEnabled: () => readAutoUpdate(getConfigPath()),
         spawn: createRealSpawn(),
         cliRealpath: resolveCliRealpath(),
-        log: (message) => console.log(message),
+        log,
       }),
   });
   process.exit(code);

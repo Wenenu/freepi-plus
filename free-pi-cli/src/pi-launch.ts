@@ -3,6 +3,7 @@ import {
   createAgentSessionRuntime,
   createAgentSessionServices,
   InteractiveMode,
+  runRpcMode,
   SessionManager,
   SettingsManager,
   type CreateAgentSessionRuntimeFactory,
@@ -51,6 +52,10 @@ export interface LaunchOptions {
    * self-update fell back to notifying. Renders the header's update banner —
    * free-pi's replacement for pi's own (suppressed) `pi update` banner. */
   updateLatest?: string;
+  /** "tui" (default) draws the interactive terminal UI; "rpc" runs headless and
+   * speaks the pi RPC protocol on stdin/stdout, for embedding free-pi in
+   * another application (see ops/freepi-panel and the SDK's docs/rpc.md). */
+  mode?: "tui" | "rpc";
 }
 
 /** The models to register + scope the picker to: the server catalog when it
@@ -459,6 +464,16 @@ export async function launchPi(opts: LaunchOptions): Promise<string> {
     agentDir: opts.agentDir,
     sessionManager: sm,
   });
+
+  // Headless mode: the identical runtime (same provider, same scoped models,
+  // same extensions) driven over RPC instead of drawn as a TUI. Everything the
+  // TUI can do — prompt, steer, abort, compact, switch model, switch session —
+  // is reachable as a JSON command. runRpcMode never returns: it owns the
+  // process until stdin closes.
+  if (opts.mode === "rpc") {
+    await runRpcMode(runtime);
+    return sm.getSessionId();
+  }
 
   const mode = new InteractiveMode(runtime, {
     initialImages: [],
