@@ -23,17 +23,6 @@ cd freepi-plus
 setup.bat
 ```
 
-`setup.bat` will:
-1. Install **Node.js 22 LTS** via `winget` if not already installed
-2. Install **bun** via PowerShell if not already installed
-3. Run `bun install` to fetch all npm dependencies
-
-Then launch the agent anytime with:
-
-```bat
-free-pi.bat
-```
-
 ### Linux / macOS
 
 ```bash
@@ -42,33 +31,17 @@ cd freepi-plus
 bash setup.sh
 ```
 
-`setup.sh` will:
-1. Install **Node.js 22** via [nvm](https://github.com/nvm-sh/nvm) if not already installed
-2. Install **bun** if not already installed
-3. Run `bun install` to fetch all npm dependencies
-
-Then launch the agent anytime with:
-
-```bash
-bash free-pi.sh
-```
+Both scripts install **Node.js 22** and **bun** automatically if they're missing, then launch the agent. On every subsequent run they skip straight to launch (dependency check is near-instant).
 
 ---
 
-## Manual setup (if you already have Node 22+ and bun)
-
-```bash
-cd free-pi-cli
-bun install
-bun run src/index.ts
-```
-
 ## Requirements
 
-| Tool | Version |
+| Tool | Installed by setup script? |
 |---|---|
-| Node.js | ≥ 22.19.0 |
-| bun | any recent |
+| Node.js ≥ 22.15 | ✅ auto-installed |
+| bun | ✅ auto-installed |
+| git | must be pre-installed |
 | Internet | GitHub OAuth + free-pi API |
 
 ---
@@ -91,5 +64,5 @@ bun run build   # produces dist/ (Node-bundled, for npm publish)
 
 Override the backend:
 ```bash
-FREEPI_BASE_URL=http://localhost:3000 bash free-pi.sh
+FREEPI_BASE_URL=http://localhost:3000 bash setup.sh
 ```
