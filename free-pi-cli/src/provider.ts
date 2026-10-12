@@ -82,8 +82,9 @@ export function buildProviderConfig(
 }
 
 export const ANTSEED_DEFAULT_MODELS: CatalogModel[] = [
-  { id: "deepseek/deepseek-chat", name: "DeepSeek Chat (Antseed P2P)" },
-  { id: "deepseek/deepseek-reasoner", name: "DeepSeek Reasoner (Antseed P2P)" },
+  { id: "deepseek-v4-flash", name: "DeepSeek V4.1 Flash (Antseed P2P - Free/Ultra-low)" },
+  { id: "deepseek/deepseek-chat", name: "DeepSeek Chat / V3 (Antseed P2P)" },
+  { id: "deepseek/deepseek-reasoner", name: "DeepSeek Reasoner / R1 (Antseed P2P)" },
   { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B (Antseed P2P)" },
   { id: "anthropic/claude-3-5-sonnet", name: "Claude 3.5 Sonnet (Antseed P2P)" },
 ];

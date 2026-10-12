@@ -440,6 +440,78 @@ export function runCompact(ctx: NotifyContext): Promise<void> {
   return Promise.resolve();
 }
 
+// ---- /provider ------------------------------------------------------------
+
+export async function showProvider(ctx: NotifyContext, targetProvider?: string): Promise<void> {
+  const providers = [
+    {
+      id: "free-pi",
+      name: "free-pi (Default / Sponsored)",
+      desc: "DeepSeek models hosted with daily free allowance and sponsor support",
+      defaultModel: "deepseek/deepseek-v4-flash",
+    },
+    {
+      id: "antseed",
+      name: "antseed (P2P AI Network)",
+      desc: "Decentralized P2P inference via local buyer proxy (http://localhost:8377)",
+      defaultModel: "deepseek-v4-flash",
+    },
+  ];
+
+  const currentProvider = (ctx as any).model?.provider || "free-pi";
+
+  const arg = targetProvider?.trim().toLowerCase();
+  if (arg) {
+    const match = providers.find((p) => p.id === arg || p.id.replace("-", "") === arg);
+    if (match) {
+      if ((ctx as any).model) {
+        (ctx as any).model = { provider: match.id, id: match.defaultModel };
+      }
+      ctx.ui.notify(
+        `Switched active provider to ${match.name}.\nDefault model: ${match.defaultModel}\n${match.desc}`,
+        "info",
+      );
+      return;
+    }
+    ctx.ui.notify(`Unknown provider "${targetProvider}". Available providers: free-pi, antseed`, "error");
+    return;
+  }
+
+  if (typeof ctx.ui.select === "function") {
+    const options = providers.map((p, i) => {
+      const activeMarker = p.id === currentProvider ? " [active]" : "";
+      return `${i + 1}. ${p.name}${activeMarker} - ${p.desc}`;
+    });
+
+    const selected = await ctx.ui.select("Select Active Provider", options);
+    if (!selected) return;
+
+    const matchIdx = selected.match(/^(\d+)\./);
+    if (matchIdx && matchIdx[1]) {
+      const idx = parseInt(matchIdx[1], 10) - 1;
+      const chosen = providers[idx];
+      if (chosen) {
+        if ((ctx as any).model) {
+          (ctx as any).model = { provider: chosen.id, id: chosen.defaultModel };
+        }
+        ctx.ui.notify(
+          `Switched active provider to ${chosen.name}.\nDefault model: ${chosen.defaultModel}`,
+          "info",
+        );
+      }
+    }
+    return;
+  }
+
+  // Fallback text output
+  let text = `Active Provider: ${currentProvider}\n\nAvailable Providers:\n`;
+  for (const p of providers) {
+    const active = p.id === currentProvider ? " (current)" : "";
+    text += `  • ${p.id}${active}: ${p.name}\n    ${p.desc}\n    Usage: /provider ${p.id}\n\n`;
+  }
+  ctx.ui.notify(text.trimEnd(), "info");
+}
+
 // ---- /usage ---------------------------------------------------------------
 
 /** Same output as the free_pi_usage tool, with no model turn — works at the wall. Never throws. */
@@ -497,6 +569,10 @@ export function createFreePiCommandsExtension(opts: CreateCommandsOptions): Inli
       pi.registerCommand("login", {
         description: "Sign in a new GitHub account (device flow).",
         handler: async (args, ctx) => showLogin(opts, ctx, args),
+      });
+      pi.registerCommand("provider", {
+        description: "Switch active inference provider (free-pi or antseed P2P network).",
+        handler: async (args, ctx) => showProvider(ctx, args),
       });
     },
   };

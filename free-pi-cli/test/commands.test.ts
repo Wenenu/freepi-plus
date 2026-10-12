@@ -8,6 +8,7 @@ import {
   openTos,
   PRIVACY_URL,
   runUpdate,
+  showProvider,
   showUsage,
   showWhatsNew,
   TERMS_URL,
@@ -305,5 +306,31 @@ describe("/usage (showUsage)", () => {
     await showUsage({ baseUrl: "https://api.test", getToken: () => "jwt", fetchImpl: fakeFetch(() => new Response("x", { status: 503 })) }, ctx);
     expect(notes[0]!.type).toBe("error");
     expect(notes[0]!.msg).toContain("503");
+  });
+});
+
+describe("/provider (showProvider)", () => {
+  test("switches to antseed with argument", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    await showProvider(ctx as any, "antseed");
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect(notes[0]?.msg).toContain("Switched active provider to antseed");
+  });
+
+  test("switches back to free-pi with argument", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "antseed", id: "deepseek-v4-flash" };
+    await showProvider(ctx as any, "free-pi");
+    expect((ctx as any).model.provider).toBe("free-pi");
+    expect(notes[0]?.msg).toContain("Switched active provider to free-pi");
+  });
+
+  test("shows list when no argument and no select UI", async () => {
+    const { ctx, notes } = notifyCtx();
+    await showProvider(ctx as any);
+    expect(notes[0]?.msg).toContain("Available Providers");
+    expect(notes[0]?.msg).toContain("free-pi");
+    expect(notes[0]?.msg).toContain("antseed");
   });
 });
