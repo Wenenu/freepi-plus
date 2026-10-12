@@ -565,13 +565,14 @@ export async function showModel(
 
   const availableModels = currentProvider === "antseed" ? antseedModels : freePiModels;
 
-  const arg = targetModel?.trim().toLowerCase();
+  const arg = targetModel?.trim();
   if (arg) {
+    const lowerArg = arg.toLowerCase();
     const match = availableModels.find(
       (m) =>
-        m.id.toLowerCase() === arg ||
-        m.name.toLowerCase() === arg ||
-        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
+        m.id.toLowerCase() === lowerArg ||
+        m.name.toLowerCase() === lowerArg ||
+        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === lowerArg.replace(/[^a-z0-9]/g, ""),
     );
     if (match) {
       await applyModelSwitch(currentProvider, match.id, ctx, pi);
@@ -586,14 +587,24 @@ export async function showModel(
     const otherModels = otherProvider === "antseed" ? antseedModels : freePiModels;
     const otherMatch = otherModels.find(
       (m) =>
-        m.id.toLowerCase() === arg ||
-        m.name.toLowerCase() === arg ||
-        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === arg.replace(/[^a-z0-9]/g, ""),
+        m.id.toLowerCase() === lowerArg ||
+        m.name.toLowerCase() === lowerArg ||
+        m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === lowerArg.replace(/[^a-z0-9]/g, ""),
     );
     if (otherMatch) {
       await applyModelSwitch(otherProvider, otherMatch.id, ctx, pi);
       ctx.ui.notify(
         `Switched provider to [${otherProvider}] and model to "${otherMatch.name}" (${otherMatch.id}).`,
+        "info",
+      );
+      return;
+    }
+
+    // Direct peer@model or custom model identifier support (e.g. 666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol)
+    if (arg.includes("@") || currentProvider === "antseed") {
+      await applyModelSwitch("antseed", arg, ctx, pi);
+      ctx.ui.notify(
+        `Switched provider to [antseed] and model to custom ID "${arg}".`,
         "info",
       );
       return;
@@ -638,6 +649,44 @@ export async function showModel(
   }
   text += `\nTo switch model: /model <model-id>\nTo change provider: /provider`;
   ctx.ui.notify(text, "info");
+}
+
+// ---- /antseed -------------------------------------------------------------
+
+export async function showAntseed(
+  opts: CreateCommandsOptions,
+  ctx: NotifyContext,
+  args?: string,
+  pi?: ExtensionAPI,
+): Promise<void> {
+  const trimmed = args?.trim();
+  if (!trimmed) {
+    // Just /antseed with no args: switch provider to antseed and show model list / info
+    await applyModelSwitch("antseed", "deepseek-v4-flash", ctx, pi);
+    ctx.ui.notify(
+      `Switched active provider to Antseed (P2P AI Network).\nUsage:\n  /antseed model <model-id or peer@model>\n  /model\n  /provider`,
+      "info",
+    );
+    return;
+  }
+
+  const parts = trimmed.split(/\s+/);
+  const subcmd = parts[0]?.toLowerCase();
+  const rest = parts.slice(1).join(" ").trim();
+
+  if (subcmd === "model") {
+    if (!rest) {
+      // /antseed model without model name -> show model selector for antseed
+      await showModel(opts, ctx, undefined, pi);
+      return;
+    }
+    // /antseed model <peer@model or modelId>
+    await showModel(opts, ctx, rest, pi);
+    return;
+  }
+
+  // If user typed e.g. /antseed peer@model or /antseed modelId directly
+  await showModel(opts, ctx, trimmed, pi);
 }
 
 // ---- /usage ---------------------------------------------------------------
@@ -705,6 +754,10 @@ export function createFreePiCommandsExtension(opts: CreateCommandsOptions): Inli
       pi.registerCommand("model", {
         description: "Select model for the active provider.",
         handler: async (args, ctx) => showModel(opts, ctx, args, pi),
+      });
+      pi.registerCommand("antseed", {
+        description: "Manage Antseed P2P network (switch model, e.g. /antseed model <peer@model>).",
+        handler: async (args, ctx) => showAntseed(opts, ctx, args, pi),
       });
     },
   };

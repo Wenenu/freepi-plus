@@ -362,4 +362,44 @@ describe("/model (showModel)", () => {
     expect(notes[0]?.msg).toContain("Available Models for antseed");
     expect(notes[0]?.msg).toContain("DeepSeek V4.1 Flash");
   });
+
+  test("accepts peer@model custom string", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    await showModel(
+      { baseUrl: "https://api.test", getToken: () => "jwt" },
+      ctx as any,
+      "666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol",
+    );
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect((ctx as any).model.id).toBe("666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol");
+    expect(notes[0]?.msg).toContain("666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol");
+  });
+});
+
+describe("/antseed (showAntseed)", () => {
+  test("/antseed model <peer@model> switches to antseed and sets custom model", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    const { showAntseed } = await import("../src/commands");
+    await showAntseed(
+      { baseUrl: "https://api.test", getToken: () => "jwt" },
+      ctx as any,
+      "model 666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol",
+    );
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect((ctx as any).model.id).toBe("666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol");
+  });
+
+  test("/antseed with no args activates antseed provider", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    const { showAntseed } = await import("../src/commands");
+    await showAntseed(
+      { baseUrl: "https://api.test", getToken: () => "jwt" },
+      ctx as any,
+    );
+    expect((ctx as any).model.provider).toBe("antseed");
+    expect(notes[0]?.msg).toContain("Switched active provider to Antseed");
+  });
 });
