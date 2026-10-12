@@ -340,8 +340,8 @@ describe("/model (showModel)", () => {
   test("switches model for current provider with argument", async () => {
     const { ctx, notes } = notifyCtx();
     (ctx as any).model = { provider: "antseed", id: "deepseek-v4-flash" };
-    await showModel({ baseUrl: "https://api.test", getToken: () => "jwt" }, ctx as any, "deepseek/deepseek-chat");
-    expect((ctx as any).model.id).toBe("deepseek/deepseek-chat");
+    await showModel({ baseUrl: "https://api.test", getToken: () => "jwt" }, ctx as any, "deepseek-r1");
+    expect((ctx as any).model.id).toBe("deepseek-r1");
     expect((ctx as any).model.provider).toBe("antseed");
     expect(notes[0]?.msg).toContain("Switched model to");
   });
