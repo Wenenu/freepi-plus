@@ -6,6 +6,9 @@ free-pi-cli/dist/
 
 # Credentials / secrets
 .freebuff/
+# Antseed wallet/identity backup (deposit address + private key) — local only.
+# Never commit this: it grants spend access to the wallet.
+antseed_identity_backup.txt
 
 # Logs
 *.log

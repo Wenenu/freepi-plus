@@ -64,7 +64,7 @@ for i in range(0, len(args), 5):
         "channelId": cid,
         "peerId": "peer" + cid[-6:],
         "seller": "0x" + cid[-8:],
-        "buyer": "0x25108E51c7ecA58976320117C969cd021D869644",
+        "buyer": "0xB0b0000000000000000000000000000000000000",  # synthetic: never a real wallet address in fixtures
         "sellerDisplayName": "Seller " + cid[-4:],
         "cumulativeSigned": str(int(tokens)),
         "reservedAt": now - 3_600_000,
