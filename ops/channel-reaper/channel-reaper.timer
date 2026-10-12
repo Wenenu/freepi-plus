@@ -1,0 +1,16 @@
+[Unit]
+Description=Check for idle Antseed payment channels every 2 minutes
+
+[Timer]
+# First check shortly after boot (a box that reboots with idle channels open
+# should clean them up without waiting), then every 2 minutes. With
+# IDLE_SECONDS=600 that means a channel is closed 10–12 minutes after its last
+# token movement.
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=15s
+# If the box was off across a scheduled run, run once as soon as it boots.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

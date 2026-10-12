@@ -1,0 +1,20 @@
+# idle-guard.service — deliberately NOT named zipbox-*, and that matters.
+#
+# This sandbox ships /run/systemd/system/zipbox-.service.d/20-retry.conf, a
+# prefix-scoped drop-in applying to every unit whose name starts with "zipbox-",
+# which forces Restart=always (RestartSec=1). systemd refuses Restart=always
+# together with Type=oneshot ("Refusing." at parse time), so a zipbox-prefixed
+# oneshot unit cannot load at all — reproduced on the sandbox 2026-10-12.
+# Renaming the unit sidesteps it: only the generic /run/systemd/system/service.d
+# drop-in applies, which sets Restart=on-failure — compatible with oneshot.
+[Unit]
+Description=Idle guard — notify (optionally pause) when no agent is working
+Documentation=file:/usr/local/share/idle-guard/README.md
+
+[Service]
+Type=oneshot
+Restart=no
+ExecStart=/usr/local/bin/idle-guard.sh
+# Below the work: never compete with an agent turn for CPU.
+Nice=15
+IOSchedulingClass=idle

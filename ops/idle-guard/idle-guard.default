@@ -1,0 +1,50 @@
+# /etc/default/idle-guard — config for idle-guard.sh
+#
+# Installed by ops/idle-guard/install.sh. Edit this file and you're done: the
+# systemd timer re-reads it on every run.
+
+# How long with no agent work / no remote session before acting. 3600 = 1 hour.
+IDLE_SECONDS=3600
+
+# Safety net: treat this 1-minute load average as "something is happening even
+# if no agent process exists" (covers heavy child processes of a parked agent).
+LOAD_THRESHOLD=1.0
+
+# Which processes count as "an AI agent is running". ERE, matched against the
+# full command line (pgrep -f).
+AGENT_PATTERN='free-pi-cli/.*index\.ts|pi-coding-agent|claude-code|codex'
+
+# What to do once the sandbox is idle. Comma-separated, any of:
+#   notify         - push/email the owner (throttled, see NOTIFY_MIN_INTERVAL)
+#   stop-antseed   - stop the antseed buyer daemon (frees a little CPU)
+#   poweroff       - `systemctl poweroff` the sandbox
+#   none           - log only
+#
+# NOTE on poweroff: zipbox bills per *running* second and documents Pause in the
+# dashboard as the supported way to stop the meter. Whether a guest-initiated
+# poweroff stops billing (or leaves the machine restorable) is NOT documented by
+# zipbox, so poweroff is opt-in — leave it out and let the notification tell you
+# to pause instead. Only add it once you have confirmed with zipbox that a
+# powered-off sandbox can be booted again from the dashboard.
+ACTIONS=notify
+
+# Email target for the notify action (empty = no email). Push notifications via
+# tribes-notify are always attempted; this is the backup channel. This is the
+# address that gets "safe to pause" when the sandbox goes idle.
+NOTIFY_TO=bbisoft1@gmail.com
+
+# Anti-flap only: don't repeat the notification within the SAME idle stretch.
+# It is re-armed the moment anything counts as busy again, so a new idle period
+# always notifies — 1800 (30 min) just stops a flapping agent from spamming.
+NOTIFY_MIN_INTERVAL=1800
+
+# Keepalive: while this file exists the sandbox is never considered idle. Use
+# the switch (survives reboots and config edits):
+#   idle-guard.sh --hold      I'm working — don't act
+#   idle-guard.sh --release   done, resume watching
+# or touch/remove it directly:
+#   touch /var/lib/idle-guard/keepalive
+KEEPALIVE_FILE=/var/lib/idle-guard/keepalive
+
+STATE_DIR=/var/lib/idle-guard
+LOG_FILE=/var/log/idle-guard.log

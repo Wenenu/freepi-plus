@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the zipbox idle guard every 5 minutes
+
+[Timer]
+# First look shortly after boot (a sandbox that comes up and is never used is
+# exactly the case this is for), then every 5 minutes.
+OnBootSec=10min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# If the sandbox was off across a scheduled run, run once as soon as it boots.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

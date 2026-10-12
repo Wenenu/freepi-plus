@@ -1,0 +1,43 @@
+# /etc/default/channel-reaper — config for channel-reaper.sh
+#
+# Installed by ops/channel-reaper/install.sh. Edit this file and you're done: the
+# systemd timer re-reads it on every run.
+
+# How long a channel's token/request counters must stay still before it is
+# closed. 600 = the ten minutes this was built for.
+IDLE_SECONDS=600
+
+# What to do with an idle channel:
+#   close          - `antseed buyer channels close <id>`: ask the seller to
+#                    settle now, skipping the request-close grace period (default)
+#   request-close  - softer: start the timeout-close, then `withdraw` later
+#   notify         - never touch it; just tell you it went idle
+ACTION=close
+
+# Close at most this many channels per pass. Keeps a large idle estate from
+# being settled all at once (and keeps the log readable).
+MAX_CLOSES_PER_RUN=1
+
+# After a failed close, don't retry that channel for this long.
+CLOSE_RETRY_SECONDS=300
+
+# The CLI to drive. Must be on the service's PATH (the unit sets one that
+# includes /usr/local/bin, where antseed lives on these sandboxes).
+ANTSEED=antseed
+
+# Log/state locations.
+STATE_DIR=/var/lib/channel-reaper
+LOG_FILE=/var/log/channel-reaper.log
+
+# Notify when a channel is closed (or fails to close). Push via tribes-notify is
+# always attempted; this is the email channel. Empty = no email.
+NOTIFY_TO=bbisoft1@gmail.com
+
+# Don't repeat the same notification kind more often than this (seconds).
+NOTIFY_MIN_INTERVAL=21600
+
+# Emergency stop. While this file exists the reaper still watches and logs but
+# closes nothing. Use the switch rather than touching the file:
+#   channel-reaper.sh --pause
+#   channel-reaper.sh --resume
+PAUSE_FILE=/var/lib/channel-reaper/paused

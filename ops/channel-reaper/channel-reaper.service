@@ -1,0 +1,24 @@
+# channel-reaper.service — deliberately NOT named zipbox-*, and that matters.
+#
+# These sandboxes ship /run/systemd/system/zipbox-.service.d/20-retry.conf: a
+# prefix-scoped drop-in that forces Restart=always (RestartSec=1) on every unit
+# whose name starts with "zipbox-". systemd refuses Restart=always together with
+# Type=oneshot ("Refusing." at parse time), so a zipbox-prefixed oneshot unit
+# cannot load at all — verified on the sandbox 2026-08-… (see ops/idle-guard).
+# The name matters because this is a oneshot: it does one pass and exits.
+[Unit]
+Description=Antseed channel reaper — close payment channels idle for 10 minutes
+Documentation=file:/usr/local/share/channel-reaper/README.md
+# The buyer daemon is on the same box; there is nothing to wait for at boot.
+
+[Service]
+Type=oneshot
+# The timer drives the schedule; a manual `systemctl start` must not retry.
+Restart=no
+ExecStart=/usr/local/bin/channel-reaper.sh
+# Settlement work is network-ish, not CPU-heavy: never compete with an agent turn.
+Nice=15
+IOSchedulingClass=idle
+# One pass can include an RPC round trip to a seller; don't let a stuck run pile
+# up behind the next timer tick.
+TimeoutStartSec=180

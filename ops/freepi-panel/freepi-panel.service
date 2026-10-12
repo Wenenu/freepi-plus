@@ -1,0 +1,33 @@
+# freepi-panel.service — the web panel for freepi on this box.
+#
+# Not named zipbox-* on purpose: sandboxes here install a prefix-scoped drop-in
+# (/run/systemd/system/zipbox-.service.d/20-retry.conf) that forces
+# Restart=always, which systemd refuses to combine with Type=oneshot. This unit
+# is Type=simple so that combination would be legal, but keeping the name clear
+# of the prefix means only the generic drop-in (Restart=on-failure) applies.
+#
+# /usr/bin/env is used as the executable so the unit needs no path templating:
+# bun is found through the PATH below, which includes the sandbox runtime's bin
+# directory (bun does not live in /usr/bin on these machines).
+[Unit]
+Description=freepi-panel — web panel for the freepi agent (watch + control sessions)
+Documentation=file:/usr/local/share/freepi-panel/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=2
+EnvironmentFile=-/etc/default/freepi-panel
+Environment=PATH=/root/.local/bin:/root/workspace/node_modules/.bin:/opt/zipbox/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+WorkingDirectory=/usr/local/share/freepi-panel
+ExecStart=/usr/bin/env bun run /usr/local/share/freepi-panel/server.ts
+# The panel is a view onto the box; never let it compete with an agent turn.
+Nice=5
+StandardOutput=append:/var/log/freepi-panel.log
+StandardError=append:/var/log/freepi-panel.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<title>freepi panel</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel2: #1c232d; --line: #2b3541;
+    --fg: #e6edf3; --dim: #93a1b1; --accent: #4c9aff; --good: #3fb950;
+    --warn: #d29922; --bad: #f85149; --user: #1f6feb;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 8px; padding: 7px 11px; cursor: pointer;
+  }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04101f; font-weight: 600; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .45; cursor: default; }
+  input, textarea, select {
+    background: #0b0f14; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  a { color: var(--accent); }
+
+  header {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding-top: calc(8px + env(safe-area-inset-top));
+    flex-wrap: wrap;
+  }
+  header .title { font-weight: 700; letter-spacing: .2px; }
+  .chip {
+    font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--dim); white-space: nowrap;
+  }
+  .chip.good { color: var(--good); border-color: #1d3b25; }
+  .chip.warn { color: var(--warn); border-color: #40330f; }
+  .chip.bad { color: var(--bad); border-color: #4b1f1c; }
+  .spacer { flex: 1; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #list {
+    width: 330px; border-right: 1px solid var(--line); background: var(--panel);
+    overflow-y: auto; flex-shrink: 0;
+  }
+  #list.hidden { display: none; }
+  .sess { padding: 9px 11px; border-bottom: 1px solid #1f2630; cursor: pointer; }
+  .sess:hover { background: var(--panel2); }
+  .sess.active { background: #16283d; border-left: 3px solid var(--accent); }
+  .sess .t { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .m { font-size: 11.5px; color: var(--dim); display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); display: inline-block; }
+  .dot.err { background: var(--bad); }
+
+  #thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #log-scroll { flex: 1; overflow-y: auto; padding: 12px 12px 4px; }
+  .banner { font-size: 12.5px; color: var(--dim); padding: 6px 0 10px; }
+
+  .entry { margin: 0 0 10px; }
+  .who { font-size: 11.5px; color: var(--dim); margin-bottom: 3px; }
+  .bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; overflow-wrap: anywhere; }
+  .bubble.user { background: #12253d; border-color: #1d4f86; }
+  .bubble.err { border-color: var(--bad); }
+  .line { min-height: 1.2em; }
+  pre { background: #070a0e; border: 1px solid var(--line); border-radius: 8px; padding: 9px; overflow-x: auto; margin: 6px 0; }
+  .tool { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .tool > summary { padding: 7px 10px; cursor: pointer; font-size: 13px; list-style: none; }
+  .tool > summary::-webkit-details-marker { display: none; }
+  .tool .name { color: var(--accent); font-weight: 600; }
+  .tool .body { padding: 0 10px 9px; }
+  .tool pre { max-height: 320px; overflow: auto; }
+  details.think > summary { font-size: 12.5px; color: var(--dim); cursor: pointer; }
+  .sys { font-size: 12px; color: var(--dim); border-left: 2px solid var(--line); padding: 2px 0 2px 8px; }
+  .caret::after { content: "▍"; color: var(--accent); animation: b 1s steps(2) infinite; }
+  @keyframes b { 50% { opacity: 0 } }
+
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+  /* Wrapping is what keeps a 390px-wide phone usable: without it the textarea
+     and the Stop button are pushed off the edge, where they can't be tapped. */
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  #composer { flex: 1 1 190px; min-width: 0; resize: none; max-height: 130px; }
+  #model { flex: 0 1 auto; max-width: 150px; }
+  #send, #stop { flex: 0 0 auto; }
+  .hint { font-size: 11.5px; color: var(--dim); flex-basis: 100%; margin-top: 5px; overflow-wrap: anywhere; }
+
+  #login { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 40; }
+  #login .box { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  #login h1 { margin: 0 0 4px; font-size: 19px; }
+  #login p { color: var(--dim); font-size: 13px; margin: 0 0 14px; }
+  .err-msg { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+  #modal { position: fixed; inset: 0; background: #000a; display: none; align-items: center; justify-content: center; padding: 18px; z-index: 50; }
+  #modal.show { display: flex; }
+  #modal .box { width: 100%; max-width: 460px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  #modal .opts { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+  .overlay { position: fixed; inset: 0; background: #0008; z-index: 20; display: none; }
+  .overlay.show { display: block; }
+  @media (max-width: 720px) {
+    #list { position: fixed; top: 0; bottom: 0; left: 0; z-index: 30; box-shadow: 0 0 30px #000a; }
+  }
+  /* A phone has ~400px of transcript to lose, so keep the controls compact. */
+  @media (max-width: 480px) {
+    footer { padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); }
+    footer button { padding: 6px 9px; font-size: 13px; }
+    .row { gap: 6px; }
+    .hint { margin-top: 3px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="box">
+    <h1>freepi panel</h1>
+    <p>Paste the panel token from this box:<br /><code>sudo cat /etc/freepi-panel/token</code></p>
+    <input id="token" type="password" placeholder="token" autocomplete="current-password" />
+    <div class="err-msg" id="login-err"></div>
+    <div style="margin-top:12px"><button class="primary" id="login-btn" style="width:100%">Sign in</button></div>
+  </div>
+</div>
+
+<header>
+  <button id="menu" title="Sessions">☰</button>
+  <span class="title">freepi</span>
+  <span class="chip" id="chip-host">…</span>
+  <span class="chip" id="chip-balance">balance …</span>
+  <span class="chip" id="chip-box">box …</span>
+  <span class="chip" id="chip-ext" style="display:none" title="status reported by freepi's extensions (antseed balance, ads meter)"></span>
+  <span class="spacer"></span>
+  <button id="refresh" title="Refresh">⟳</button>
+</header>
+
+<main>
+  <div id="list" class="hidden"></div>
+  <div id="thread">
+    <div id="log-scroll"></div>
+    <footer>
+      <div class="row">
+        <select id="model" title="Model" style="max-width:150px"></select>
+        <textarea id="composer" rows="1" placeholder="Message the agent…" disabled></textarea>
+        <button class="primary" id="send" disabled>Send</button>
+        <button class="danger" id="stop" disabled>Stop</button>
+      </div>
+      <div class="row" style="margin-top:7px; gap:6px; flex-wrap:wrap">
+        <button id="attach">Take control</button>
+        <button id="new-session">New session</button>
+        <button id="compact">Compact</button>
+        <button id="hold">Hold awake</button>
+        <button id="release">Allow sleep</button>
+        <span class="hint" id="status-line"></span>
+      </div>
+    </footer>
+  </div>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<div id="modal"><div class="box"><div id="modal-body"></div><div class="id"></div></div></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// tiny helpers
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const state = {
+  authed: false, sessions: [], projects: [], current: null,
+  entries: new Map(), order: [], cursor: null,
+  agentId: null, streaming: false, dialogs: [],
+  stream: null, agentStream: null, live: null, log: "",
+  attachWarned: false,
+};
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, { credentials: "same-origin", headers: { "content-type": "application/json" }, ...opts });
+  if (res.status === 401) { showLogin(); throw new Error("not signed in"); }
+  const text = await res.text();
+  let body; try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+};
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const ago = (iso) => {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return s < 10 ? "now" : Math.floor(s) + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  return Math.floor(s / 86400) + "d ago";
+};
+const usd = (n) => (typeof n === "number" ? "$" + n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "?");
+
+// markdown-lite: fenced code, inline code, bold, links. Untrusted text only ever
+// reaches the DOM through textContent, so nothing here can inject markup.
+function renderInline(node, text) {
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(https?:\/\/[^\s<>()]+)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) node.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const tok = m[0];
+    if (tok[0] === "`") { const c = el("code"); c.textContent = tok.slice(1, -1); node.appendChild(c); }
+    else if (tok.startsWith("**")) { const b = el("strong"); b.textContent = tok.slice(2, -2); node.appendChild(b); }
+    else { const a = el("a"); a.href = tok; a.target = "_blank"; a.rel = "noopener"; a.textContent = tok; node.appendChild(a); }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) node.appendChild(document.createTextNode(text.slice(last)));
+}
+function mdInto(parent, text) {
+  const parts = String(text ?? "").split("```");
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const pre = el("pre"), code = el("code");
+      code.textContent = part.replace(/^[a-zA-Z0-9_+\-.]*\n/, "");
+      pre.appendChild(code); parent.appendChild(pre);
+    } else {
+      for (const line of part.split("\n")) {
+        if (line.trim() === "") { parent.appendChild(el("div", "line")); continue; }
+        const div = el("div", "line"); renderInline(div, line); parent.appendChild(div);
+      }
+    }
+  });
+}
+const textOf = (content) => typeof content === "string" ? content
+  : Array.isArray(content) ? content.map((b) => (b && typeof b.text === "string" ? b.text : "")).join("").trim()
+  : "";
+
+// ---------------------------------------------------------------------------
+// login
+// ---------------------------------------------------------------------------
+function showLogin() { state.authed = false; $("login").style.display = "flex"; }
+async function login() {
+  const token = $("token").value.trim();
+  $("login-err").textContent = "";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST", credentials: "same-origin",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "login failed");
+    state.authed = true; $("login").style.display = "none";
+    bootstrap();
+  } catch (err) { $("login-err").textContent = err.message; }
+}
+$("login-btn").onclick = login;
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+
+// ---------------------------------------------------------------------------
+// sessions list
+// ---------------------------------------------------------------------------
+async function loadSessions() {
+  const { sessions, projects } = await api("/api/sessions");
+  state.sessions = sessions; state.projects = projects || [];
+  const list = $("list"); list.textContent = "";
+  for (const s of sessions) {
+    const row = el("div", "sess" + (state.current && s.id === state.current.id ? " active" : ""));
+    const t = el("div", "t");
+    if (s.live) { const d = el("span", "dot" + (s.error ? " err" : "")); d.style.marginRight = "6px"; t.appendChild(d); }
+    t.appendChild(document.createTextNode(s.title || s.id));
+    row.appendChild(t);
+    const m = el("div", "m");
+    m.appendChild(el("span", null, (s.cwd || s.slug || "").replace(/^\/root\//, "~/")));
+    if (s.model) m.appendChild(el("span", null, "· " + s.model));
+    m.appendChild(el("span", null, "· " + ago(s.lastActivity)));
+    if (s.attached) m.appendChild(el("span", null, "· controlled"));
+    if (s.error) { const e = el("span", null, "· " + s.error); e.style.color = "var(--bad)"; m.appendChild(e); }
+    row.appendChild(m);
+    row.onclick = () => openSession(s);
+    list.appendChild(row);
+  }
+  if (!sessions.length) list.appendChild(el("div", "sess", "no sessions yet"));
+}
+
+// ---------------------------------------------------------------------------
+// transcript
+// ---------------------------------------------------------------------------
+function entryNode(entry) {
+  const msg = entry.message || {};
+  const wrap = el("div", "entry");
+  if (entry.type === "compaction") { wrap.appendChild(el("div", "sys", "context compacted" + (entry.summary ? ": " + String(entry.summary).slice(0, 120) : ""))); return wrap; }
+  if (entry.type === "model_change") { wrap.appendChild(el("div", "sys", "model → " + (entry.model || "?"))); return wrap; }
+  if (entry.type === "thinking_level_change") { wrap.appendChild(el("div", "sys", "thinking → " + (entry.level || "?"))); return wrap; }
+
+  if (msg.role === "user") {
+    wrap.appendChild(el("div", "who", "you"));
+    const b = el("div", "bubble user"); mdInto(b, textOf(msg.content));
+    wrap.appendChild(b);
+    return wrap;
+  }
+  if (msg.role === "toolResult") {
+    const d = el("details", "tool");
+    const sum = el("summary");
+    sum.appendChild(el("span", "name", msg.toolName || "tool"));
+    const txt = textOf(msg.content);
+    sum.appendChild(document.createTextNode(" " + txt.slice(0, 90).replace(/\s+/g, " ") + (txt.length > 90 ? " …" : "")));
+    d.appendChild(sum);
+    if (msg.isError) d.classList.add("err");
+    const body = el("div", "body"); const pre = el("pre"); pre.textContent = txt; body.appendChild(pre); d.appendChild(body);
+    wrap.appendChild(d);
+    if (msg.isError) wrap.querySelector("summary").style.color = "var(--bad)";
+    return wrap;
+  }
+  if (msg.role === "assistant") {
+    wrap.appendChild(el("div", "who", "agent" + (msg.model ? " · " + msg.model : "")));
+    const b = el("div", "bubble" + (msg.stopReason === "error" ? " err" : ""));
+    const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content || "") }];
+    for (const block of blocks) {
+      if (block.type === "thinking" && block.thinking) {
+        const d = el("details", "think"); d.appendChild(el("summary", null, "thinking"));
+        const pre = el("pre"); pre.textContent = block.thinking; d.appendChild(pre); b.appendChild(d);
+      } else if (block.type === "text" && block.text) {
+        mdInto(b, block.text);
+      } else if (block.type === "toolCall") {
+        const d = el("details", "tool");
+        const sum = el("summary");
+        sum.appendChild(el("span", "name", block.name || "tool"));
+        sum.appendChild(document.createTextNode(" " + JSON.stringify(block.arguments || {}).slice(0, 110)));
+        d.appendChild(sum);
+        const body = el("div", "body"); const pre = el("pre");
+        pre.textContent = JSON.stringify(block.arguments || {}, null, 2); body.appendChild(pre); d.appendChild(body);
+        b.appendChild(d);
+      }
+    }
+    if (msg.stopReason === "error") b.appendChild(el("div", "sys", "the model call failed"));
+    if (!b.childNodes.length) b.appendChild(el("div", "line", "(empty)"));
+    wrap.appendChild(b);
+    return wrap;
+  }
+  wrap.appendChild(el("div", "sys", entry.type || "entry"));
+  return wrap;
+}
+
+function addEntry(entry) {
+  if (!entry || !entry.id || state.entries.has(entry.id)) return false;
+  state.entries.set(entry.id, entry); state.order.push(entry.id);
+  const n = entryNode(entry);
+  n.dataset.id = entry.id;
+  $("log-scroll").appendChild(n);
+  return true;
+}
+function removeStreaming() { const n = $("log-scroll").querySelector(".streaming"); if (n) n.remove(); }
+function renderAll() {
+  const box = $("log-scroll"); box.textContent = "";
+  for (const id of state.order) {
+    const entry = state.entries.get(id);
+    if (!entry) continue;
+    const n = entryNode(entry); n.dataset.id = id; box.appendChild(n);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function openSession(s) {
+  closeStreams();
+  state.current = s; state.entries = new Map(); state.order = []; state.cursor = null;
+  state.agentId = null; state.streaming = false; state.log = ""; state.attachWarned = false;
+  document.querySelectorAll(".sess").forEach((n) => n.classList.remove("active"));
+  $("log-scroll").textContent = "";
+  $("list").classList.add("hidden"); $("overlay").classList.remove("show");
+  const banner = el("div", "banner");
+  banner.textContent = (s.cwd || "") + (s.live ? " · a terminal appears to be writing this session right now" : "");
+  $("log-scroll").appendChild(banner);
+
+  const data = await api("/api/sessions/" + encodeURIComponent(s.id) + "/entries?limit=200");
+  state.cursor = data.cursor;
+  for (const e of data.entries) addEntry(e);
+  state.agentId = data.agentId || null;
+  $("log-scroll").scrollTop = $("log-scroll").scrollHeight;
+  updateComposer();
+  if (state.agentId) attachAgentStream(state.agentId);
+  openTail(s.id);
+  loadSessions().catch(() => {});
+}
+
+function openTail(id) {
+  if (state.stream) state.stream.close();
+  const url = "/api/sessions/" + encodeURIComponent(id) + "/stream?since=" + encodeURIComponent(state.cursor || "");
+  const es = new EventSource(url);
+  state.stream = es;
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === "entry" && msg.entry) {
+      if (addEntry(msg.entry)) {
+        state.cursor = msg.entry.id || state.cursor;
+        const box = $("log-scroll");
+        const near = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
+        if (near) box.scrollTop = box.scrollHeight;
+      }
+    }
+  };
+  es.onerror = () => { /* EventSource retries on its own */ };
+}
+
+function closeStreams() {
+  if (state.stream) { state.stream.close(); state.stream = null; }
+  if (state.agentStream) { state.agentStream.close(); state.agentStream = null; }
+}
+
+// ---------------------------------------------------------------------------
+// agent control
+// ---------------------------------------------------------------------------
+function updateComposer() {
+  const attached = Boolean(state.agentId);
+  $("composer").disabled = !attached;
+  $("send").disabled = !attached || state.streaming;
+  $("attach").textContent = attached ? "Reconnect control" : "Take control";
+  $("stop").disabled = !attached || !state.streaming;
+  $("status-line").textContent = attached
+    ? (state.streaming ? "agent is working…" : "connected to a freepi rpc agent")
+    : "watching only — take control to send prompts";
+}
+
+async function attach() {
+  if (!state.current) return;
+  if (state.current.live && !state.attachWarned) {
+    state.attachWarned = true;
+    const ok = await modalConfirm(
+      "This session looks live",
+      "A terminal is writing this session file right now. Controlling it from here starts a second freepi process on the same session: prompts will work, but the two writers can interleave. Continue?",
+    );
+    if (!ok) return;
+  }
+  $("status-line").textContent = "starting freepi --mode rpc…";
+  try {
+    const { agent } = await api("/api/agents/start", { method: "POST", body: JSON.stringify({ sessionId: state.current.id }) });
+    state.agentId = agent.id;
+    if (agent.exitInfo) throw new Error(agent.exitInfo);
+    attachAgentStream(agent.id);
+    await loadModels();
+    updateComposer();
+  } catch (err) {
+    $("status-line").textContent = "could not start: " + err.message;
+  }
+}
+
+function attachAgentStream(agentId) {
+  if (state.agentStream) state.agentStream.close();
+  const es = new EventSource("/api/agents/" + agentId + "/stream");
+  state.agentStream = es;
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    handleAgentEvent(msg);
+  };
+}
+
+function handleAgentEvent(msg) {
+  switch (msg.type) {
+    case "panel_state":
+      state.streaming = Boolean(msg.streaming);
+      updateComposer();
+      if (msg.agent && msg.agent.dialogs) for (const d of msg.agent.dialogs) showDialog(d);
+      break;
+    case "panel_log":
+      state.log = (state.log + (msg.text || "")).slice(-8000);
+      break;
+    case "panel_exit":
+      state.streaming = false; state.agentId = null; state.agentStream && state.agentStream.close();
+      $("status-line").textContent = "agent " + (msg.info || "exited");
+      updateComposer();
+      break;
+    case "panel_dialog_answered":
+      break;
+    case "turn_start": case "agent_start":
+      state.streaming = true; updateComposer(); break;
+    case "turn_end": case "agent_settled":
+      state.streaming = false; removeStreaming(); updateComposer(); break;
+    case "message_update": {
+      const d = msg.assistantMessageEvent || {};
+      const box = $("log-scroll");
+      let node = box.querySelector(".streaming");
+      if (!node) {
+        node = el("div", "entry streaming");
+        node.appendChild(el("div", "who", "agent · live"));
+        const b = el("div", "bubble"); b.appendChild(el("div", "line caret"));
+        node.appendChild(b); box.appendChild(node);
+      }
+      const line = node.querySelector(".line");
+      if (d.type === "thinking_delta") {
+        let pre = node.querySelector("pre.think");
+        if (!pre) { pre = el("pre", "think"); node.querySelector(".bubble").appendChild(pre); }
+        pre.textContent += d.delta || "";
+      } else if (d.type === "text_delta") {
+        line.insertBefore(document.createTextNode(d.delta || ""), line.lastChild === null ? null : line.firstChild === null ? null : null);
+        line.appendChild(document.createTextNode(d.delta || ""));
+      } else if (d.type === "toolcall_start") {
+        const t = el("div", "sys", "→ " + (d.toolName || "tool"));
+        node.querySelector(".bubble").appendChild(t);
+      }
+      box.scrollTop = box.scrollHeight;
+      break;
+    }
+    case "tool_execution_start":
+      addEntry({ id: "live-tool-" + (msg.toolCallId || Math.random()), type: "live", timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: [{ type: "toolCall", name: msg.toolName, arguments: msg.args || {} }] } });
+      break;
+    case "tool_execution_end":
+      if (msg.result) {
+        addEntry({ id: "live-result-" + (msg.toolCallId || Math.random()), type: "live", timestamp: new Date().toISOString(),
+          message: { role: "toolResult", toolName: msg.toolName, content: msg.result.content, isError: Boolean(msg.isError) } });
+      }
+      break;
+    case "compaction_start": $("status-line").textContent = "compacting context…"; break;
+    case "compaction_end": $("status-line").textContent = "context compacted"; break;
+    case "extension_ui_request":
+      // Dialog methods want an answer; the rest are freepi's own extensions
+      // talking to whatever surface is attached (the antseed balance line and
+      // the ads meter both arrive this way), so show them instead of dropping
+      // them.
+      if (["select", "confirm", "input", "editor"].includes(msg.method)) showDialog(msg);
+      else if (msg.method === "setStatus") setExtStatus(msg.statusKey, msg.statusText);
+      else if (msg.method === "notify") $("status-line").textContent = msg.message || "";
+      break;
+    case "response":
+      if (msg.success === false) $("status-line").textContent = "command failed: " + (msg.error || "?");
+      break;
+  }
+}
+
+async function sendCommand(command, timeoutMs) {
+  if (!state.agentId) throw new Error("not attached");
+  const res = await api("/api/agents/" + state.agentId + "/command", { method: "POST", body: JSON.stringify({ command, timeoutMs }) });
+  return res.response;
+}
+
+const extStatus = new Map();
+function setExtStatus(key, text) {
+  if (!key) return;
+  if (text) extStatus.set(key, text); else extStatus.delete(key);
+  const chip = $("chip-ext");
+  const parts = [...extStatus.values()];
+  chip.textContent = parts.join(" · ");
+  chip.style.display = parts.length ? "" : "none";
+}
+
+async function loadModels() {
+  if (!state.agentId) return;
+  try {
+    const res = await api("/api/agents/" + state.agentId + "/command", { method: "POST", body: JSON.stringify({ command: { type: "get_available_models" } }) });
+    const models = (res.response && res.response.data && res.response.data.models) || [];
+    const sel = $("model"); sel.textContent = "";
+    const st = await api("/api/agents/" + state.agentId + "/command", { method: "POST", body: JSON.stringify({ command: { type: "get_state" } }) });
+    const current = (st.response && st.response.data && st.response.data.model) || {};
+    for (const m of models) {
+      const o = el("option", null, (m.provider ? m.provider + "/" : "") + (m.id || m.name));
+      o.value = (m.provider || "") + "|" + m.id;
+      if (m.id === current.id) o.selected = true;
+      sel.appendChild(o);
+    }
+  } catch { /* leave the picker empty; not fatal */ }
+}
+
+$("model").onchange = async () => {
+  if (!state.agentId) return;
+  const [provider, modelId] = $("model").value.split("|");
+  const res = await sendCommand({ type: "set_model", provider, modelId }).catch((e) => ({ error: e.message }));
+  $("status-line").textContent = res.error ? "model switch failed: " + res.error : "model → " + modelId;
+};
+
+async function send() {
+  const text = $("composer").value.trim();
+  if (!text || !state.agentId) return;
+  $("composer").value = "";
+  const res = await sendCommand({ type: "prompt", message: text }).catch((e) => ({ error: e.message }));
+  if (res.error) { $("status-line").textContent = "send failed: " + res.error; $("composer").value = text; return; }
+  state.streaming = true; updateComposer();
+}
+
+// ---------------------------------------------------------------------------
+// extension dialogs
+// ---------------------------------------------------------------------------
+function showDialog(req) {
+  const body = $("modal-body"); body.textContent = "";
+  body.appendChild(el("h3", null, req.title || req.method));
+  if (req.message) body.appendChild(el("p", null, req.message));
+  if (req.placeholder) body.appendChild(el("p", null, req.placeholder));
+  const opts = el("div", "opts");
+  const answer = async (payload) => {
+    $("modal").classList.remove("show");
+    await api("/api/agents/" + state.agentId + "/ui", { method: "POST", body: JSON.stringify({ id: req.id, ...payload }) }).catch(() => {});
+  };
+  if (req.method === "confirm") {
+    const y = el("button", "primary", "Yes"); y.onclick = () => answer({ confirmed: true });
+    const n = el("button", null, "No"); n.onclick = () => answer({ confirmed: false });
+    opts.append(y, n);
+  } else if (req.method === "select" && Array.isArray(req.options)) {
+    for (const o of req.options) { const b = el("button", null, String(o)); b.onclick = () => answer({ value: o }); opts.appendChild(b); }
+  } else {
+    const input = el("textarea", null, req.prefill || ""); input.rows = 4;
+    const ok = el("button", "primary", "Send"); ok.onclick = () => answer({ value: input.value });
+    opts.append(input, ok);
+  }
+  const cancel = el("button", null, "Cancel"); cancel.onclick = () => answer({ cancelled: true });
+  opts.appendChild(cancel);
+  body.appendChild(opts);
+  $("modal").classList.add("show");
+}
+function modalConfirm(title, message) {
+  return new Promise((resolve) => {
+    const body = $("modal-body"); body.textContent = "";
+    body.appendChild(el("h3", null, title));
+    body.appendChild(el("p", null, message));
+    const opts = el("div", "opts");
+    const y = el("button", "primary", "Continue"); y.onclick = () => { $("modal").classList.remove("show"); resolve(true); };
+    const n = el("button", null, "Cancel"); n.onclick = () => { $("modal").classList.remove("show"); resolve(false); };
+    opts.append(y, n); body.appendChild(opts);
+    $("modal").classList.add("show");
+  });
+}
+
+// ---------------------------------------------------------------------------
+// status + chrome
+// ---------------------------------------------------------------------------
+async function loadStatus(force) {
+  try {
+    const s = await api("/api/status" + (force ? "?refresh=1" : ""));
+    $("chip-host").textContent = s.host;
+    $("chip-balance").textContent = s.balance && s.balance.ok
+      ? usd(s.balance.availableUsd) + " left · " + usd(s.balance.spentUsd) + " spent"
+      : "balance unavailable";
+    $("chip-balance").className = "chip" + (s.balance && s.balance.ok ? "" : " bad");
+    const box = s.box || {};
+    $("chip-box").textContent = box.available ? (box.held ? "held awake" : box.state || "box") : "no idle-guard";
+    $("chip-box").className = "chip " + (box.held ? "warn" : /BUSY/.test(box.state || "") ? "good" : "");
+    $("chip-box").title = box.raw || "";
+    state.agents = s.agents || [];
+    if (!state.agentId) {
+      const mine = state.current && state.agents.find((a) => a.sessionPath && state.current.path === a.sessionPath);
+      if (mine) { state.agentId = mine.id; attachAgentStream(mine.id); }
+    }
+  } catch (err) {
+    $("chip-balance").textContent = "status error";
+  }
+}
+
+$("menu").onclick = () => {
+  const l = $("list");
+  const showing = !l.classList.contains("hidden");
+  if (window.innerWidth <= 720) { l.classList.toggle("hidden"); $("overlay").classList.toggle("show", !showing); }
+  else l.classList.toggle("hidden");
+};
+$("overlay").onclick = () => { $("list").classList.add("hidden"); $("overlay").classList.remove("show"); };
+$("refresh").onclick = async () => { await loadSessions(); await loadStatus(true); if (state.current) openSession(state.current); };
+$("attach").onclick = attach;
+$("send").onclick = send;
+$("stop").onclick = async () => {
+  state.streaming = false; updateComposer();
+  await sendCommand({ type: "abort" }).catch((e) => { $("status-line").textContent = "abort failed: " + e.message; });
+};
+$("compact").onclick = async () => {
+  $("status-line").textContent = "compacting…";
+  const r = await sendCommand({ type: "compact" }).catch((e) => ({ error: e.message }));
+  $("status-line").textContent = r.error ? "compact failed: " + r.error : "context compacted";
+};
+$("hold").onclick = async () => { const r = await api("/api/box/hold", { method: "POST", body: "{}" }).catch((e) => ({ error: e.message })); $("chip-box").textContent = r.error || "held awake"; loadStatus(); };
+$("release").onclick = async () => { const r = await api("/api/box/release", { method: "POST", body: "{}" }).catch((e) => ({ error: e.message })); $("chip-box").textContent = r.error || "sleep allowed"; loadStatus(); };
+$("new-session").onclick = async () => {
+  const cwd = prompt("Project directory on the box", (state.current && state.current.cwd) || (state.projects[0] || "/root/workspace"));
+  if (!cwd) return;
+  $("status-line").textContent = "starting a new session in " + cwd + "…";
+  try {
+    const { agent } = await api("/api/agents/start", { method: "POST", body: JSON.stringify({ cwd, newSession: true }) });
+    state.agentId = agent.id; attachAgentStream(agent.id);
+    await loadModels(); await loadSessions();
+    $("status-line").textContent = "new session ready — say something";
+    if (agent.state && agent.state.sessionId) {
+      const s = state.sessions.find((x) => x.id === agent.state.sessionId);
+      if (s) openSession(s);
+    }
+  } catch (err) { $("status-line").textContent = "could not start: " + err.message; }
+};
+$("composer").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("composer").addEventListener("input", () => {
+  const t = $("composer"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 130) + "px";
+});
+
+async function bootstrap() {
+  state.authed = true;
+  $("list").classList.remove("hidden");
+  await loadStatus();
+  await loadSessions();
+  const first = state.sessions.find((s) => s.live) || state.sessions[0];
+  if (first) openSession(first).catch(() => {});
+  setInterval(() => loadStatus().catch(() => {}), 60000);
+  setInterval(() => loadSessions().catch(() => {}), 45000);
+}
+
+// try an existing session cookie first
+api("/api/status").then(() => bootstrap()).catch(() => showLogin());
+</script>
+</body>
+</html>
