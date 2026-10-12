@@ -217,17 +217,26 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
           const allToolCalls: any[] = [];
 
           for (const block of message.content) {
-            if (block.type === "text" && typeof block.text === "string") {
-              const parsed = extractTextToolCalls(block.text);
-              if (parsed.hasToolCalls) {
-                if (parsed.cleanText.length > 0) {
-                  newContent.push({ type: "text", text: parsed.cleanText });
+            // Recovery is best effort by design: a block that makes the parser
+            // throw (or a malformed one) must leave the turn intact, and the
+            // agent_end backup below then tells the model to continue. Losing a
+            // session to a parser bug is a far worse outcome than one unparsed
+            // block of text.
+            try {
+              if (block.type === "text" && typeof block.text === "string") {
+                const parsed = extractTextToolCalls(block.text);
+                if (parsed.hasToolCalls) {
+                  if (parsed.cleanText.length > 0) {
+                    newContent.push({ type: "text", text: parsed.cleanText });
+                  }
+                  allToolCalls.push(...parsed.toolCalls);
+                } else {
+                  newContent.push(block);
                 }
-                allToolCalls.push(...parsed.toolCalls);
               } else {
                 newContent.push(block);
               }
-            } else {
+            } catch {
               newContent.push(block);
             }
           }

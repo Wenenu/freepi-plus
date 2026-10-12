@@ -75,6 +75,29 @@ describe("a tool call printed as text is executed, not printed", () => {
     expect(result.message.content.some((block) => block.type === "text" && String(block.text).includes("Let me look."))).toBe(true);
   });
 
+  test("a block that makes the parser throw cannot cost the session its turn", async () => {
+    const h = harness();
+    const handler = h.on.get("message_end");
+    const hostile = {
+      get type() {
+        return "text";
+      },
+      get text(): string {
+        throw new Error("parser bait");
+      },
+    };
+
+    // The throwing block is passed through untouched, and the one good call in
+    // the same message is still recovered — the turn continues either way.
+    const result = (await handler?.(
+      { message: assistantMessage([hostile as unknown as Record<string, unknown>, { type: "text", text: DSML_CALL }]) },
+      h.ctx,
+    )) as { message: { stopReason: string; content: Array<Record<string, unknown>> } };
+
+    expect(result?.message.stopReason).toBe("toolUse");
+    expect(result.message.content.some((block) => block.type === "toolCall")).toBe(true);
+  });
+
   test("markup the parser cannot recover is reported to the model, at most twice", () => {
     const h = harness();
     const handler = h.on.get("agent_end");
