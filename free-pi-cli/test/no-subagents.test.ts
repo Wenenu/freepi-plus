@@ -158,6 +158,28 @@ describe("closed extension list (#28 R20, SB1)", () => {
     };
     const res3 = (await messageEnd({ type: "message_end", message: nonCeilingMsg }, { model: { provider: "free-pi" } })) as unknown;
     expect(res3).toBeUndefined();
+
+    // Recovers tool calls emitted as text into structured ToolCall items with stopReason="toolUse"
+    const textToolMsg = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "free-pi",
+      content: [
+        {
+          type: "text",
+          text: '<invoke name="bash">\n<parameter name="cmd">ls -la /root/workspace/</parameter>\n</invoke>',
+        },
+      ],
+    };
+    const res4 = (await messageEnd({ type: "message_end", message: textToolMsg }, { model: { provider: "free-pi" } })) as {
+      message: { stopReason: string; content: any[] };
+    };
+    expect(res4).toBeDefined();
+    expect(res4.message.stopReason).toBe("toolUse");
+    const toolCall = res4.message.content.find((c) => c.type === "toolCall");
+    expect(toolCall).toBeDefined();
+    expect(toolCall.name).toBe("bash");
+    expect(toolCall.arguments).toEqual({ command: "ls -la /root/workspace/" });
   });
 
   test("provider extension automatically sends followUp continuation when response is truncated (stopReason length)", async () => {

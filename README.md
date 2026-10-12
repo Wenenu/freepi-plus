@@ -10,6 +10,7 @@ A hardened, quality-of-life-enhanced fork of [free-pi-cli](https://github.com/ea
 | Auto-compact on context-ceiling errors (413 / `context_ceiling`) | ✅ |
 | Auto-continue after threshold-based context compaction | ✅ |
 | Ctrl+C ignored — agent can't be killed mid-task accidentally | ✅ |
+| Auto-executes text tool calls (`<bash>`, DSML, `<invoke>`, JSON) | ✅ |
 
 ---
 

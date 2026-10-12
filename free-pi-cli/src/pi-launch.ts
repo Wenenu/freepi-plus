@@ -23,6 +23,7 @@ import { createFreePiCommandsExtension } from "./commands";
 import { createHeaderExtension } from "./header";
 import { resolveFreePiScope } from "./provider-lock";
 import { patchResumeLine } from "./resume-line";
+import { extractTextToolCalls } from "./text-tool-parser";
 
 export interface LaunchOptions {
   baseUrl: string;
@@ -114,22 +115,59 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
       pi.on("message_end", (event, ctx) => {
         const message = event.message;
         if (message.role !== "assistant") return;
-        if (message.stopReason !== "error") return;
         if (message.provider !== PROVIDER_NAME && ctx.model?.provider !== PROVIDER_NAME) return;
 
-        const errorMessage = message.errorMessage ?? "";
-        if (errorMessage.includes("context_length_exceeded")) return;
-        if (
-          errorMessage.includes('"code":"context_ceiling"') ||
-          errorMessage.includes('"code": "context_ceiling"') ||
-          errorMessage.includes("context_ceiling")
-        ) {
-          return {
-            message: {
-              ...message,
-              errorMessage: `context_length_exceeded: ${errorMessage}`,
-            },
-          };
+        if (message.stopReason === "error") {
+          const errorMessage = message.errorMessage ?? "";
+          if (errorMessage.includes("context_length_exceeded")) return;
+          if (
+            errorMessage.includes('"code":"context_ceiling"') ||
+            errorMessage.includes('"code": "context_ceiling"') ||
+            errorMessage.includes("context_ceiling")
+          ) {
+            return {
+              message: {
+                ...message,
+                errorMessage: `context_length_exceeded: ${errorMessage}`,
+              },
+            };
+          }
+          return;
+        }
+
+        // Recover tool calls emitted as raw text tokens (e.g. DeepSeek DSML or XML tags)
+        if (!Array.isArray(message.content)) return;
+        const hasStructuredToolCalls = message.content.some((c: any) => c.type === "toolCall");
+        if (!hasStructuredToolCalls) {
+          const newContent: any[] = [];
+          const allToolCalls: any[] = [];
+
+          for (const block of message.content) {
+            if (block.type === "text" && typeof block.text === "string") {
+              const parsed = extractTextToolCalls(block.text);
+              if (parsed.hasToolCalls) {
+                if (parsed.cleanText.length > 0) {
+                  newContent.push({ type: "text", text: parsed.cleanText });
+                }
+                allToolCalls.push(...parsed.toolCalls);
+              } else {
+                newContent.push(block);
+              }
+            } else {
+              newContent.push(block);
+            }
+          }
+
+          if (allToolCalls.length > 0) {
+            newContent.push(...allToolCalls);
+            return {
+              message: {
+                ...message,
+                content: newContent,
+                stopReason: "toolUse",
+              },
+            };
+          }
         }
       });
       pi.on("agent_end", (event, ctx) => {
