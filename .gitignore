@@ -1,0 +1,22 @@
+# Dependencies
+free-pi-cli/node_modules/
+
+# Build output
+free-pi-cli/dist/
+
+# Credentials / secrets
+.freebuff/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
