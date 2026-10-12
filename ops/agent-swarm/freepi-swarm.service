@@ -1,0 +1,36 @@
+# freepi-swarm.service — the swarm UI, the on/off switch, and the process that
+# deploys subagents. Not named zipbox-* on purpose: sandboxes here install a
+# prefix-scoped drop-in (/run/systemd/system/zipbox-.service.d/20-retry.conf)
+# that forces Restart=always, which systemd refuses to combine with Type=oneshot.
+# This unit is Type=simple so the combination would be legal, but staying clear
+# of the prefix means only the generic drop-in applies.
+#
+# This service is a *viewer and controller* over a filesystem bus: the roster,
+# mail, tasks and scope claims are plain files, so sessions coordinate even when
+# this unit is stopped. Stopping it does not stop deployed workers (each has its
+# own supervisor process); it only takes the UI away.
+[Unit]
+Description=freepi-swarm — deploy freepi subagents and coordinate sessions
+Documentation=file:/usr/local/share/freepi-swarm/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=2
+EnvironmentFile=-/etc/default/freepi-swarm
+# PATH matters twice: it must contain `bun` (not in /usr/bin on these images) and
+# `freepi`. It is also inherited by every deployed subagent, which is how an
+# agent's bash finds the `swarm` CLI to talk to the others.
+Environment=PATH=/root/.local/bin:/root/workspace/node_modules/.bin:/opt/zipbox/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+WorkingDirectory=/usr/local/share/freepi-swarm
+ExecStart=/usr/bin/env bun run /usr/local/share/freepi-swarm/swarm.ts serve
+# Never let the coordinator compete with an agent turn.
+Nice=5
+StandardOutput=append:/var/log/freepi-swarm.log
+StandardError=append:/var/log/freepi-swarm.log
+
+[Install]
+WantedBy=multi-user.target

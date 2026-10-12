@@ -32,11 +32,15 @@ import { createFreePiCommandsExtension } from "./commands";
 import { createHeaderExtension } from "./header";
 import { resolveFreePiScope } from "./provider-lock";
 import { patchResumeLine } from "./resume-line";
-import { extractTextToolCalls } from "./text-tool-parser";
+import { extractTextToolCalls, looksLikeToolMarkup } from "./text-tool-parser";
 import { ANTSEED_DEPOSIT_TOOL_NAME, ANTSEED_PROVIDER_NAME } from "./antseed";
 import { createAntseedDepositToolExtension } from "./antseed-deposit-tool";
 import { createAntseedStatusExtension } from "./antseed-status";
 import { applyModelSwitch } from "./model-switch";
+import { createSwarmExtension } from "./swarm/extension";
+import { SWARM_TOOL_NAME } from "./swarm/tool";
+import { createKeepaliveExtension } from "./keepalive";
+import { createRotateExtension } from "./rotate";
 
 export interface LaunchOptions {
   baseUrl: string;
@@ -82,6 +86,7 @@ export const ALLOWED_TOOL_NAMES: readonly string[] = [
   BUY_TOOL_NAME,
   DOCS_TOOL_NAME,
   ANTSEED_DEPOSIT_TOOL_NAME,
+  SWARM_TOOL_NAME,
 ];
 
 export interface RuntimeBuildOptions {
@@ -126,9 +131,13 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     return opts.jwt;
   };
 
+  // How many times a turn may be nudged after ending on tool-call markup.
+  const MAX_TOOL_MARKUP_NUDGES = 2;
+
   const providerExtension: InlineExtension = {
     name: "free-pi-provider",
     factory: (pi: ExtensionAPI) => {
+      let toolMarkupNudges = 0;
       pi.registerProvider(PROVIDER_NAME, buildProviderConfig(opts.baseUrl, opts.jwt, sessionId, models));
       pi.registerProvider(ANTSEED_PROVIDER_NAME, buildAntseedProviderConfig());
 
@@ -238,10 +247,33 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
       pi.on("agent_end", (event, ctx) => {
         const lastMsg = event.messages[event.messages.length - 1];
         if (!lastMsg || lastMsg.role !== "assistant") return;
-        if (lastMsg.stopReason !== "length") return;
         if (lastMsg.provider !== PROVIDER_NAME && ctx.model?.provider !== PROVIDER_NAME) return;
 
-        pi.sendUserMessage("Continue with the task that got interrupted", { deliverAs: "followUp" });
+        if (lastMsg.stopReason === "length") {
+          pi.sendUserMessage("Continue with the task that got interrupted", { deliverAs: "followUp" });
+          return;
+        }
+
+        // A turn that ended with tool-call markup still in its text did not do
+        // the work the model meant to do: it printed a call (DeepSeek's DSML
+        // wrapper, an <invoke> block) instead of making one, and the session
+        // would otherwise simply stop with the markup on screen. Say so and let
+        // it re-issue the call properly. Bounded: two nudges, then leave it
+        // alone rather than looping against a model that will not comply.
+        const text = Array.isArray(lastMsg.content)
+          ? lastMsg.content
+              .filter((block: any) => block.type === "text" && typeof block.text === "string")
+              .map((block: any) => block.text as string)
+              .join("\n")
+          : "";
+        if (!looksLikeToolMarkup(text)) return;
+        if (toolMarkupNudges >= MAX_TOOL_MARKUP_NUDGES) return;
+        toolMarkupNudges += 1;
+        pi.sendUserMessage(
+          "Your last reply contained a tool call as raw text, which this session cannot execute. " +
+            "Re-issue it as a real tool call through the tool-calling API (one call at a time), and do not print tool markup as text. Then continue the task.",
+          { deliverAs: "followUp" },
+        );
       });
       pi.on("session_compact", (event, ctx) => {
         // willRetry: true means pi is auto-retrying the interrupted turn — don't interfere
@@ -320,20 +352,38 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     updateLatest: opts.updateLatest,
   });
 
-  // Closed, ELEVEN-item list — SB1's structural test fails if a future edit
-  // adds a twelfth extension or drops one of these. Settings deliberately
-  // omit `packages` (no pi-packages installed, so no MCP adapter / subagent
-  // extension can be pulled in) and pin `defaultTools` to the built-in tool
-  // set (never includes a subagent/background-bash/MCP tool per pi's own
-  // docs — see provider.ts). Pi ships with none of those by default, so
-  // there is nothing else to turn off — free-pi-cli's job is to never opt
-  // back into them.
+  // Closed, TWELVE-item list — SB1's structural test fails if a future edit adds
+  // a thirteenth extension or drops one of these. Settings deliberately omit
+  // `packages` (no pi-packages installed, so no MCP adapter or subagent package
+  // can be pulled in) and pin `defaultTools` to the built-in tool set (never
+  // includes a subagent/background-bash/MCP tool per pi's own docs — see
+  // provider.ts). Pi ships with none of those by default, so there is nothing
+  // else to turn off — free-pi-cli's job is to never opt back into them. The
+  // swarm (2026-10-13) is coordination *between* separate sessions, not an
+  // in-session subagent: it adds no way for one session to run two completions
+  // at once, which is what #28 R20 actually protects.
   const antseedDepositToolExtension: InlineExtension = createAntseedDepositToolExtension();
 
   // 2026-10: the Antseed footer line — which antseed model is active and how
   // much USDC is left to pay for it. UI-lifecycle hooks only (no context, no
   // session writes); see antseed-status.ts.
   const antseedStatusExtension: InlineExtension = createAntseedStatusExtension();
+
+  // 2026-10-13: /coordinate + the free_pi_swarm tool — several free-pi sessions
+  // working one target (bug bounties): a board, exclusive scope claims, a
+  // message bus between sessions, and a switch that gates deploying a worker.
+  // A deployed worker is a SEPARATE CLI process (`--mode rpc`) with its own
+  // session and its own lease, so this session still never has two completions
+  // open at once (SB2's guarantee is unchanged); see src/swarm/*.
+  const swarmExtension: InlineExtension = createSwarmExtension();
+
+  // 2026-10-13: unattended runs. `free-pi-keepalive` nudges an idle session to
+  // continue; `free-pi-rotate` writes a handoff summary every 3 hours and
+  // continues the task in a new session (same provider and model) so a long run
+  // never dies against a full context. Both are switchable in-session
+  // (/keepalive, /rotate) and by env (FREEPI_KEEPALIVE, FREEPI_ROTATE).
+  const keepaliveExtension: InlineExtension = createKeepaliveExtension();
+  const rotateExtension: InlineExtension = createRotateExtension({ agentDir: opts.agentDir });
 
   const extensionFactories = [
     providerExtension,
@@ -347,6 +397,9 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     headerExtension,
     antseedDepositToolExtension,
     antseedStatusExtension,
+    swarmExtension,
+    keepaliveExtension,
+    rotateExtension,
   ];
 
   const settingsManager = SettingsManager.inMemory({

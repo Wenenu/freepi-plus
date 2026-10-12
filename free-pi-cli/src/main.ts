@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { openBrowser } from "./browser";
 import { HELP_TEXT, parseCliArgs, versionLine } from "./cli-args";
+import { runSwarmCli } from "./swarm/cli";
 import { readAutoUpdate } from "./cli-config";
 import { resolveBaseUrl } from "./env";
 import { runLogout } from "./logout";
@@ -50,6 +51,13 @@ async function main(): Promise<void> {
   if (command.kind === "unknown") {
     console.error(`free-pi-cli: unknown argument "${command.arg}"\n\n${HELP_TEXT}`);
     process.exit(2);
+  }
+
+  if (command.kind === "swarm") {
+    // Coordination is local: no server contact, no consent prompt, no allowance.
+    // That matters because a deployed worker runs these commands from bash.
+    const code = await runSwarmCli(command.args);
+    process.exit(code);
   }
 
   if (command.kind === "logout") {

@@ -5,6 +5,53 @@ All notable changes to `free-pi-cli`. Format based on [Keep a Changelog](https:/
 The short highlights shown in the CLI at startup live in `src/changelog.ts` (bundled into the
 build); this file is the fuller human record.
 
+## [Unreleased]
+
+### Added
+- **A bug-bounty crew inside free-pi.** `/coordinate [target]` turns the swarm
+  switch on, puts the session on the roster, and hands the agent its operating
+  brief; the `free_pi_swarm` tool is how it puts scopes on the board and deploys a
+  worker only where the work is genuinely independent. Each worker is a separate
+  free-pi session in its own process with its own allowance, and the crew is capped
+  (`maxWorkers`, default 3) because that cap is a spend limit.
+- `/swarm` — the control surface: status, on, off, crew, stop, board, inbox.
+- **`free-pi-cli swarm …`** — the same coordination from a shell, which is what a
+  deployed worker has (it has no crew tool, only bash): `status`, `register`,
+  `send`, `inbox`, `watch`, `task`, `claim`, `release`, `spawn`, `stop`, `reap`,
+  `brief`, `roles`. It contacts nothing and needs no sign-in.
+- One tester per target: scopes are claimed exclusively and leased, so two sessions
+  never test the same target and a dead one cannot pin a target or a task forever.
+- Messages are pushed into the recipient's session rather than polled for, so a
+  teammate's finding arrives without anyone asking.
+- A worker killed without a graceful exit has its scope, task and slot freed on the
+  next roster read, instead of leaving a teammate blocked behind a lease nothing holds.
+
+### Fixed
+- **A turn no longer dies when the model prints its tool call as text.** DeepSeek
+  emits DSML markup, and the recovery missed the shapes it actually produces: the
+  `tool_calls` wrapper (plural), parameter tags carrying extra attributes
+  (`string="false"`), and the whole argument object wrapped in a parameter named
+  `arguments`. Those calls were left as prose, the session stopped, and the work
+  with it. All of them are now recovered into real calls.
+- When a printed call still cannot be recovered, the session is told so and asked
+  to re-issue it through the tool-calling API — at most twice, so a model that
+  will not comply cannot loop.
+
+### Added
+- **Keepalive**: an idle session is nudged to continue (`/keepalive status | off |
+  on | now`; `FREEPI_KEEPALIVE=0` disables). A running turn is never interrupted.
+- **Rotation, every 3 hours**: the session writes a full handoff document, then the
+  task continues in a **new session with the same provider and model**, opened by a
+  message naming that document and telling it to carry on from there
+  (`/rotate status | now | off | on`; `FREEPI_ROTATE=0` disables,
+  `FREEPI_ROTATE_MS` sets the shift). Documents and records live in
+  `~/.free-pi/agent/handoff/`. A missing document is retried once and then noted in
+  the handoff rather than stalling the run.
+
+### Changed
+- `free-pi-cli` now takes a subcommand (`swarm`), where previously every argument
+  was a run flag; unknown arguments still fail loudly rather than starting a session.
+
 ## [0.2.18] - 2026-09-04
 
 ### Changed

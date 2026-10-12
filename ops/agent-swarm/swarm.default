@@ -1,0 +1,37 @@
+# /etc/default/freepi-swarm — config for the freepi swarm service (`swarm serve`).
+#
+# Installed by ops/agent-swarm/install.sh. The CLI reads most of this on every
+# invocation, so a change here needs `systemctl restart freepi-swarm` only for
+# the web UI; workers already running keep their own environment.
+
+# Where the bus, roster, board, claims and logs live. Root-only (0700): it holds
+# agent output and, for a bug bounty, unannounced findings.
+SWARM_STATE_DIR=/var/lib/freepi-swarm
+
+# Bind address and port for the UI. Loopback on purpose — publishing it is a
+# separate deliberate step, exactly like freepi-panel.
+SWARM_HOST=127.0.0.1
+SWARM_PORT=8790
+
+# The panel token file. Created 0600 by install.sh and never printed by it.
+SWARM_TOKEN_FILE=/etc/freepi-swarm/token
+
+# How to start freepi for a deployed subagent. Each subagent is its own
+# `freepi --mode rpc` process, so this must be the real command, not a wrapper
+# that ignores flags. `freepi` is the installed bin; a checkout also works:
+#   SWARM_FREEPI_CMD=bun run /root/workspace/freepi-plus/free-pi-cli/src/index.ts
+SWARM_FREEPI_CMD=freepi
+
+# Where the role briefs live (recon, hunter, verifier, scribe).
+SWARM_ROLES_DIR=/usr/local/share/freepi-swarm/roles
+
+# Hard ceiling on concurrent workers, whatever config.json says. Each worker is
+# its own ad-funded free-pi session with its own lease, so this is also a spend
+# ceiling: raise it deliberately.
+SWARM_MAX_WORKERS=3
+
+# How often a supervisor pushes new mail into its running agent (ms) and how
+# often it refreshes the roster heartbeat. Lower = snappier coordination, more
+# CPU on a box that is also running agent turns.
+SWARM_MAIL_POLL_MS=2000
+SWARM_HEARTBEAT_MS=10000

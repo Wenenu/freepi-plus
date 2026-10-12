@@ -15,6 +15,11 @@ export type CliCommand =
   | { kind: "help" }
   | { kind: "version" }
   | { kind: "logout" }
+  /** Swarm coordination (bus, board, scope claims, worker deployment). Local
+   * only: it contacts nothing and never spends allowance, which is why it is
+   * dispatched before the run() flow and is safe to call in a loop from an
+   * agent's bash. */
+  | { kind: "swarm"; args: string[] }
   | { kind: "unknown"; arg: string };
 
 export const HELP_TEXT = `
@@ -25,8 +30,13 @@ Usage:
   free-pi-cli --session <id>      resume a session; the id is printed when one ends
   free-pi-cli --mode rpc          headless: JSONL commands on stdin, events on stdout
   free-pi-cli logout              remove the stored sign-in token; the next run signs in again
+  free-pi-cli swarm <command>     coordinate several sessions on one target: status, roster, send,
+                                  inbox, task, claim, spawn, stop (see: free-pi-cli swarm --help)
   free-pi-cli --version           print the CLI version
   free-pi-cli --help              show this help
+
+Inside a session: /coordinate starts a bug-bounty crew and hands the coordinating
+agent the swarm tool; /swarm is the control surface (status, on, off, crew, stop).
 
 Options:
   --session <id>   resume a specific session instead of starting a new one
@@ -71,6 +81,10 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
   if (local) {
     return args.length > 0 ? { kind: "unknown", arg: args[0] as string } : { kind: local };
   }
+
+  // The swarm subcommand owns everything after it (including its own flags), so
+  // `swarm send --to x "…"` reaches the swarm parser intact.
+  if (first === "swarm") return { kind: "swarm", args };
 
   let mode: RunMode = "tui";
   let session: string | undefined;

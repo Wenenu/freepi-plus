@@ -23,6 +23,17 @@ describe("parseCliArgs — local command dispatch", () => {
     expect(parseCliArgs(["loguot"])).toEqual({ kind: "unknown", arg: "loguot" });
   });
 
+  test("the swarm subcommand owns its own args, flags and all", () => {
+    expect(parseCliArgs(["swarm"])).toEqual({ kind: "swarm", args: [] });
+    // A worker's bash tool calls this in a loop: nothing may be re-interpreted
+    // as a run flag (the message is not a --mode, and --to is not ours).
+    expect(parseCliArgs(["swarm", "send", "--to", "scout", "scope is mine"])).toEqual({
+      kind: "swarm",
+      args: ["send", "--to", "scout", "scope is mine"],
+    });
+    expect(parseCliArgs(["swarm", "status", "--json"])).toEqual({ kind: "swarm", args: ["status", "--json"] });
+  });
+
   test("trailing args after a valid command -> unknown, reporting the extra arg", () => {
     expect(parseCliArgs(["logout", "--force"])).toEqual({ kind: "unknown", arg: "--force" });
   });
@@ -74,6 +85,9 @@ describe("help/version text", () => {
       "--help",
       "--session",
       "--mode rpc",
+      "free-pi-cli swarm",
+      "/coordinate",
+      "/swarm",
       "FREEPI_BASE_URL",
       "FREEPI_NO_AUTO_UPDATE",
     ]) {

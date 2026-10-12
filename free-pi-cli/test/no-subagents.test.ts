@@ -33,6 +33,7 @@ import { USAGE_TOOL_NAME } from "../src/usage-tool";
 import { BUY_TOOL_NAME } from "../src/buy-tool";
 import { DOCS_TOOL_NAME } from "../src/docs-tool";
 import { ANTSEED_DEPOSIT_TOOL_NAME } from "../src/antseed";
+import { SWARM_TOOL_NAME } from "../src/swarm/tool";
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -48,14 +49,23 @@ function factoryOf(ext: InlineExtension): (pi: never) => void {
 }
 
 describe("closed extension list (#28 R20, SB1)", () => {
-  test("buildRuntimeOptions registers exactly the eleven known extensions — no more, no less", () => {
+  test("buildRuntimeOptions registers exactly the fourteen known extensions — no more, no less", () => {
     const opts = buildRuntimeOptions(baseOpts("http://example.test"), "session-a");
     // #226: the closed set deliberately grew to six with free-pi-buy-tool;
     // 2026-09-01: to seven with free-pi-error-notice (one readable line on a
     // 429); 2026-09-03: to eight with free-pi-header (the startup header,
     // U1/U2); 2026-09-03: to nine with free-pi-docs-tool (the free_pi_docs
     // tool, U2); 2026-10: to ten with free-pi-antseed-deposit-tool, and to
-    // eleven with free-pi-antseed-status (the Antseed footer line).
+    // eleven with free-pi-antseed-status (the Antseed footer line);
+    // 2026-10-13: to twelve with free-pi-swarm (/coordinate, the free_pi_swarm
+    // tool, the message bus between *separate* sessions and the deployment
+    // switch); to fourteen with free-pi-keepalive (an idle session is told to
+    // continue) and free-pi-rotate (every 3 hours: a handoff summary, then the
+    // task continues in a new session) — unattended runs, in other words. That
+    // is a deliberate growth of this list, not a relaxation of it: the
+    // assertion still pins the exact set, so any *unintended* addition still
+    // fails here. Neither new extension adds a way for one session to run two
+    // completions at once, so #28 R20's guarantee is untouched.
     expect([...opts.extensionNames].sort()).toEqual(
       [
         "free-pi-ads",
@@ -66,7 +76,10 @@ describe("closed extension list (#28 R20, SB1)", () => {
         "free-pi-docs-tool",
         "free-pi-error-notice",
         "free-pi-header",
+        "free-pi-keepalive",
         "free-pi-provider",
+        "free-pi-rotate",
+        "free-pi-swarm",
         "free-pi-tool-guard",
         "free-pi-usage-tool",
       ].sort(),
@@ -86,10 +99,14 @@ describe("closed extension list (#28 R20, SB1)", () => {
     expect(settings.quietStartup).toBe(true);
   });
 
-  test("the strict SDK tools allowlist is exactly SAFE_TOOLS plus the four legitimate custom tools", () => {
+  test("the strict SDK tools allowlist is exactly SAFE_TOOLS plus the five legitimate custom tools", () => {
+    // The swarm tool is the fifth (2026-10-13). It is a coordination tool: it
+    // starts *other* free-pi processes and writes swarm state, and it cannot
+    // make this session run two completions at once — the guarantee SB2 below
+    // still proves, unchanged, is a property of this session's own runtime.
     const opts = buildRuntimeOptions(baseOpts("http://example.test"), "session-c");
     expect([...opts.tools].sort()).toEqual(
-      [...SAFE_TOOLS, USAGE_TOOL_NAME, BUY_TOOL_NAME, DOCS_TOOL_NAME, ANTSEED_DEPOSIT_TOOL_NAME].sort(),
+      [...SAFE_TOOLS, USAGE_TOOL_NAME, BUY_TOOL_NAME, DOCS_TOOL_NAME, ANTSEED_DEPOSIT_TOOL_NAME, SWARM_TOOL_NAME].sort(),
     );
   });
 

@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>freepi swarm</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --line: #262b36;
+        --text: #e6e8ee;
+        --dim: #8b93a4;
+        --on: #2ecc71;
+        --off: #7f8798;
+        --warn: #f5a623;
+        --bad: #e05a5a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      header {
+        display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+        padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+        position: sticky; top: 0; z-index: 5;
+      }
+      h1 { font-size: 15px; margin: 0 12px 0 0; letter-spacing: 0.04em; }
+      main { padding: 16px; display: grid; gap: 16px; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+      h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--dim); font-weight: 500; font-size: 12px; }
+      tr:last-child td { border-bottom: none; }
+      code, .mono { color: var(--dim); }
+      button {
+        background: #232734; color: var(--text); border: 1px solid var(--line);
+        border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer;
+      }
+      button:hover { border-color: #3a4152; }
+      button.primary { background: #2b4f7d; border-color: #2b4f7d; }
+      button.danger { background: #4a2626; border-color: #4a2626; }
+      input, textarea, select {
+        background: #10131a; color: var(--text); border: 1px solid var(--line);
+        border-radius: 6px; padding: 6px 8px; font: inherit; width: 100%;
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .row > * { flex: 0 1 auto; }
+      .grow { flex: 1 1 220px; }
+      .switch { display: flex; align-items: center; gap: 10px; }
+      .switch input { width: auto; }
+      .pill { border-radius: 999px; padding: 2px 9px; font-size: 12px; border: 1px solid var(--line); }
+      .pill.on { color: var(--on); border-color: #22543a; }
+      .pill.off { color: var(--off); }
+      .pill.working { color: var(--warn); border-color: #5a4415; }
+      .pill.idle { color: var(--on); border-color: #22543a; }
+      .pill.exited { color: var(--bad); border-color: #5a2525; }
+      .dim { color: var(--dim); }
+      .hidden { display: none !important; }
+      #log {
+        max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+        font-size: 12px; color: var(--dim);
+      }
+      #login { max-width: 420px; margin: 12vh auto; }
+      a { color: #7fb3ff; }
+    </style>
+  </head>
+  <body>
+    <section id="login">
+      <h2>freepi swarm — sign in</h2>
+      <p class="dim">
+        The token is the password. It is on the box, 0600, and readable with<br />
+        <code>cat ~/.free-pi/swarm/token</code> (or /etc/freepi-swarm/token).
+      </p>
+      <div class="row">
+        <input id="token" class="grow" type="password" placeholder="panel token" autocomplete="current-password" />
+        <button id="signin" class="primary">sign in</button>
+      </div>
+      <p id="loginErr" class="dim"></p>
+    </section>
+
+    <div id="app" class="hidden">
+      <header>
+        <h1>freepi swarm</h1>
+        <label class="switch">
+          <input id="enabled" type="checkbox" />
+          <span>deploy subagents</span>
+        </label>
+        <span id="toggleText" class="pill off">switching…</span>
+        <span id="slots" class="dim"></span>
+        <span id="live" class="dim"></span>
+      </header>
+
+      <main>
+        <section>
+          <h2>Deploy a subagent</h2>
+          <div class="row">
+            <input id="spawnName" class="grow" placeholder="name (scout, hunter-2)" />
+            <select id="spawnRole">
+              <option value="hunter">hunter</option>
+              <option value="recon">recon</option>
+              <option value="verifier">verifier</option>
+              <option value="scribe">scribe</option>
+            </select>
+            <input id="spawnTask" placeholder="task id (optional)" />
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <input id="spawnCwd" class="grow" placeholder="/root/workspace/target" />
+            <button id="spawn" class="primary">deploy</button>
+            <button id="stopAll" class="danger">stop all</button>
+          </div>
+          <p id="spawnMsg" class="dim"></p>
+          <p class="dim">
+            Each subagent is its own <code>freepi --mode rpc</code> process: its own session, its own
+            lease, its own single concurrent model call. The switch above gates deployment only —
+            stop always works.
+          </p>
+        </section>
+
+        <section>
+          <h2>Roster</h2>
+          <table>
+            <thead>
+              <tr><th>agent</th><th>role</th><th>state</th><th>task</th><th>pid</th><th>mail</th><th></th></tr>
+            </thead>
+            <tbody id="agents"></tbody>
+          </table>
+        </section>
+
+        <section>
+          <h2>Board</h2>
+          <div class="row">
+            <input id="taskTitle" class="grow" placeholder="new task title" />
+            <input id="taskScope" placeholder="scope (host / path)" />
+            <button id="addTask" class="primary">add</button>
+          </div>
+          <table style="margin-top: 10px">
+            <thead>
+              <tr><th>id</th><th>state</th><th>owner</th><th>title</th><th>scope</th><th></th></tr>
+            </thead>
+            <tbody id="tasks"></tbody>
+          </table>
+        </section>
+
+        <section>
+          <h2>Scopes held (one tester per scope)</h2>
+          <table>
+            <thead><tr><th>owner</th><th>scope</th><th>until</th><th></th></tr></thead>
+            <tbody id="claims"></tbody>
+          </table>
+        </section>
+
+        <section>
+          <h2>Send a message on the bus</h2>
+          <div class="row">
+            <input id="mailTo" placeholder="to (agent name or all)" />
+            <select id="mailKind">
+              <option value="note">note</option>
+              <option value="question">question</option>
+              <option value="answer">answer</option>
+              <option value="finding">finding</option>
+              <option value="handoff">handoff</option>
+              <option value="alert">alert</option>
+            </select>
+          </div>
+          <textarea id="mailBody" rows="3" style="margin-top: 8px" placeholder="what they need to know"></textarea>
+          <div class="row" style="margin-top: 8px">
+            <button id="sendMail" class="primary">send</button>
+            <span id="mailMsg" class="dim"></span>
+          </div>
+        </section>
+
+        <section>
+          <h2>Live <span id="streamState" class="dim"></span></h2>
+          <div id="log"></div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      let state = null;
+      let cookieJar = null;
+
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) =>
+        String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          ...options,
+          headers: { "content-type": "application/json", ...(options.headers || {}) },
+        });
+        if (res.status === 401) {
+          showLogin();
+          throw new Error("not signed in");
+        }
+        const text = await res.text();
+        let data = {};
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          data = { raw: text };
+        }
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+      }
+
+      function showLogin() {
+        $("app").classList.add("hidden");
+        $("login").classList.remove("hidden");
+      }
+
+      function mount() {
+        $("login").classList.add("hidden");
+        $("app").classList.remove("hidden");
+        void refresh();
+        startStream();
+      }
+
+      function render() {
+        if (!state) return;
+        const cfg = state.config;
+        $("enabled").checked = Boolean(cfg.enabled);
+        $("toggleText").textContent = cfg.enabled ? `ON · max ${cfg.maxWorkers}` : "OFF";
+        $("toggleText").className = `pill ${cfg.enabled ? "on" : "off"}`;
+        $("slots").textContent = `slots ${state.slots.used.length}/${state.slots.max}`;
+
+        $("agents").innerHTML =
+          state.agents
+            .map((a) => {
+              const unread = state.mail[a.name] || 0;
+              const canStop = a.source === "deployed" && a.status !== "exited";
+              return `<tr>
+                <td>${esc(a.name)}</td>
+                <td>${esc(a.role)}</td>
+                <td><span class="pill ${esc(a.status)}">${esc(a.status)}</span></td>
+                <td>${esc(a.taskId || "")}<br /><span class="dim">${esc(a.sessionId ? a.sessionId.slice(0, 8) : "")}</span></td>
+                <td>${esc(a.pid ?? "-")}</td>
+                <td>${unread ? `<span class="pill working">${unread}</span>` : '<span class="dim">0</span>'}</td>
+                <td>
+                  ${canStop ? `<button class="danger" data-stop="${esc(a.name)}">stop</button>` : ""}
+                  <button data-log="${esc(a.name)}">log</button>
+                </td>
+              </tr>`;
+            })
+            .join("") || '<tr><td colspan="7" class="dim">no agents yet — deploy one above, or a hand-driven session can run `swarm register`</td></tr>';
+
+        $("tasks").innerHTML =
+          state.tasks.items
+            .map(
+              (t) => `<tr>
+              <td>${esc(t.id)}</td>
+              <td><span class="pill ${t.status === "done" ? "idle" : t.status === "failed" ? "exited" : t.status === "claimed" ? "working" : "off"}">${esc(t.status)}</span></td>
+              <td>${esc(t.owner || "-")}</td>
+              <td>${esc(t.title)}${t.evidence ? `<br /><span class="dim">${esc(String(t.evidence).slice(0, 160))}</span>` : ""}</td>
+              <td>${esc(t.scope || "")}</td>
+              <td>
+                ${t.status === "open" || (t.status === "claimed" && state.tasks.stale.includes(t.id)) ? `<button data-claim="${esc(t.id)}">claim</button>` : ""}
+                ${t.status === "claimed" ? `<button data-done="${esc(t.id)}">done</button>` : ""}
+              </td>
+            </tr>`,
+            )
+            .join("") || '<tr><td colspan="6" class="dim">the board is empty</td></tr>';
+
+        $("claims").innerHTML =
+          state.claims
+            .map(
+              (c) => `<tr>
+              <td>${esc(c.owner)}</td>
+              <td>${esc(c.scope)}</td>
+              <td class="dim">${esc(c.expiresAt)}</td>
+              <td><button data-release="${esc(c.scope)}">release</button></td>
+            </tr>`,
+            )
+            .join("") || '<tr><td colspan="4" class="dim">no scope is held — every target is open to whoever claims it first</td></tr>';
+      }
+
+      async function refresh() {
+        try {
+          state = await api("/api/state");
+          render();
+        } catch (err) {
+          if (String(err.message) !== "not signed in") $("spawnMsg").textContent = err.message;
+        }
+      }
+
+      function logLine(text) {
+        const el = $("log");
+        el.textContent = `${new Date().toISOString().slice(11, 19)}  ${text}\n${el.textContent}`.slice(0, 20000);
+      }
+
+      let stream = null;
+      function startStream() {
+        if (stream) stream.close();
+        $("live").textContent = "· connecting";
+        stream = new EventSource("/api/stream");
+        stream.onopen = () => {
+          $("live").textContent = "· live";
+        };
+        stream.onerror = () => {
+          $("live").textContent = "· reconnecting";
+        };
+        stream.onmessage = (evt) => {
+          let data = {};
+          try {
+            data = JSON.parse(evt.data);
+          } catch {
+            return;
+          }
+          if (data.type === "swarm_heartbeat") return;
+          if (data.type === "swarm_ready") return;
+          logLine(`${data.kind || data.type} ${JSON.stringify({ ...data, ts: undefined, kind: undefined, type: undefined, name: undefined })}`);
+          void refresh();
+        };
+      }
+
+      // --- actions -------------------------------------------------------------
+      $("signin").onclick = async () => {
+        $("loginErr").textContent = "";
+        try {
+          await api("/api/login", { method: "POST", body: JSON.stringify({ token: $("token").value.trim() }) });
+          cookieJar = true;
+          mount();
+        } catch (err) {
+          $("loginErr").textContent = err.message;
+        }
+      };
+      $("token").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") $("signin").click();
+      });
+
+      $("enabled").onchange = async (e) => {
+        try {
+          await api("/api/toggle", { method: "POST", body: JSON.stringify({ enabled: e.target.checked }) });
+          logLine(`switch ${e.target.checked ? "ON" : "OFF"}`);
+          await refresh();
+        } catch (err) {
+          logLine(`toggle failed: ${err.message}`);
+          await refresh();
+        }
+      };
+
+      $("spawn").onclick = async () => {
+        $("spawnMsg").textContent = "deploying…";
+        try {
+          const res = await api("/api/spawn", {
+            method: "POST",
+            body: JSON.stringify({
+              name: $("spawnName").value.trim() || undefined,
+              role: $("spawnRole").value,
+              taskId: $("spawnTask").value.trim() || undefined,
+              cwd: $("spawnCwd").value.trim() || undefined,
+            }),
+          });
+          $("spawnMsg").textContent = `deployed ${res.worker.name} (pid ${res.worker.pid}, slot ${res.worker.slot})`;
+          $("spawnName").value = "";
+          $("spawnTask").value = "";
+          await refresh();
+        } catch (err) {
+          $("spawnMsg").textContent = err.message;
+        }
+      };
+
+      $("stopAll").onclick = async () => {
+        try {
+          const res = await api("/api/stop", { method: "POST", body: JSON.stringify({ all: true }) });
+          $("spawnMsg").textContent = `stopping ${res.stopping.length} worker(s): ${res.stopping.join(", ") || "(none)"}`;
+          await refresh();
+        } catch (err) {
+          $("spawnMsg").textContent = err.message;
+        }
+      };
+
+      $("addTask").onclick = async () => {
+        try {
+          await api("/api/tasks", {
+            method: "POST",
+            body: JSON.stringify({ action: "add", title: $("taskTitle").value.trim(), scope: $("taskScope").value.trim() || undefined, owner: "panel" }),
+          });
+          $("taskTitle").value = "";
+          $("taskScope").value = "";
+          await refresh();
+        } catch (err) {
+          logLine(`add task failed: ${err.message}`);
+        }
+      };
+
+      $("sendMail").onclick = async () => {
+        const to = $("mailTo").value.trim();
+        const body = $("mailBody").value.trim();
+        if (!to || !body) {
+          $("mailMsg").textContent = "need a recipient and a body";
+          return;
+        }
+        try {
+          if (to === "all") {
+            for (const agent of state.agents.filter((a) => a.name !== "panel")) {
+              await api("/api/mail", { method: "POST", body: JSON.stringify({ to: agent.name, body, from: "panel", subject: $("mailKind").value }) });
+            }
+            $("mailMsg").textContent = "broadcast";
+          } else {
+            await api("/api/mail", { method: "POST", body: JSON.stringify({ to, body, from: "panel", subject: $("mailKind").value }) });
+            $("mailMsg").textContent = `sent to ${to} (a deployed worker gets it pushed in within ~2s)`;
+          }
+          $("mailBody").value = "";
+          await refresh();
+        } catch (err) {
+          $("mailMsg").textContent = err.message;
+        }
+      };
+
+      document.addEventListener("click", async (e) => {
+        const el = e.target.closest("button[data-stop], button[data-log], button[data-claim], button[data-done], button[data-release]");
+        if (!el) return;
+        try {
+          if (el.dataset.stop) {
+            await api("/api/stop", { method: "POST", body: JSON.stringify({ name: el.dataset.stop }) });
+            logLine(`asked ${el.dataset.stop} to stop`);
+          } else if (el.dataset.claim) {
+            await api("/api/tasks", { method: "POST", body: JSON.stringify({ action: "claim", id: el.dataset.claim, owner: "panel" }) });
+          } else if (el.dataset.done) {
+            await api("/api/tasks", { method: "POST", body: JSON.stringify({ action: "done", id: el.dataset.done, owner: "panel", evidence: "closed from the panel" }) });
+          } else if (el.dataset.release) {
+            const claim = state.claims.find((c) => c.scope === el.dataset.release);
+            await api("/api/tasks", { method: "POST", body: JSON.stringify({ action: "add", title: "released", owner: "panel" }) }).catch(() => {});
+            logLine(`release ${el.dataset.release} (held by ${claim ? claim.owner : "?"}) — use \`swarm release\` as that agent, or --force`);
+          } else if (el.dataset.log) {
+            const res = await api(`/api/log?name=${encodeURIComponent(el.dataset.log)}`);
+            logLine(`--- ${el.dataset.log} log ---\n${res.log.slice(-4000)}`);
+          }
+          if (!el.dataset.release) await refresh();
+        } catch (err) {
+          logLine(`action failed: ${err.message}`);
+        }
+      });
+
+      // A cookie already in place (or a fresh load) goes straight in.
+      void (async () => {
+        try {
+          state = await api("/api/state");
+          mount();
+        } catch {
+          showLogin();
+        }
+      })();
+      setInterval(() => {
+        if (state) void refresh();
+      }, 5000);
+    </script>
+  </body>
+</html>
