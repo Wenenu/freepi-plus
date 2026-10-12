@@ -8,7 +8,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Config } from "@freepi/shared";
 import type { AdsDeps } from "./api";
 import { fetchAdNext, postImpression } from "./api";
-import { renderAdCard, renderPlainAdLine, type ThemeLike } from "./style";
+import { renderAdCard, renderPlainAdLine, resolveTheme } from "./style";
 
 export const INLINE_WIDGET_ID = "freepi-ad-inline";
 
@@ -37,7 +37,8 @@ export function createInlineRenderer(): InlineRenderer {
       const ad = await fetchAdNext(deps, "inline");
       if (!ad) return;
 
-      const theme = ctx.ui.theme as ThemeLike;
+      const theme = resolveTheme(ctx.ui);
+      if (!theme) return; // headless mode: no terminal to draw into
       const columns = columnsOverride ?? process.stdout.columns ?? 80;
       const lines =
         columns >= config.adMinColumns

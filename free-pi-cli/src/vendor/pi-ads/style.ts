@@ -16,6 +16,25 @@ export interface ThemeLike {
   bold(text: string): string;
 }
 
+/**
+ * Read the active theme, tolerating a surface that has none.
+ *
+ * pi's TUI always initializes a theme; headless RPC mode does not, and
+ * `ctx.ui.theme` throws ("Theme not initialized. Call initTheme() first.")
+ * there. Ad rendering is pure presentation, so in a mode with no terminal to
+ * draw into, drawing nothing is the correct behavior — and an extension must
+ * never throw an error event into a session just because nothing is being
+ * drawn (it did, once per turn_end, before this guard).
+ */
+export function resolveTheme(ui: { theme?: unknown }): ThemeLike | undefined {
+  try {
+    const theme = ui.theme as ThemeLike | undefined;
+    return theme && typeof theme.fg === "function" && typeof theme.bold === "function" ? theme : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sanitizer — strips ANSI/OSC/control sequences from every creative text
 // field before it's ever assembled into a widget line. Ad copy is untrusted

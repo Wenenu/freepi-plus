@@ -6,7 +6,7 @@ import type { AdsDeps } from "./api";
 import { fetchMe } from "./api";
 import { usdToCredits } from "@freepi/shared";
 import { inferErrorFromRemainingBudget, mapErrorCode } from "./errors";
-import { renderErrorLine, sanitizeText, type ThemeLike } from "./style";
+import { renderErrorLine, resolveTheme, sanitizeText } from "./style";
 
 export const METER_WIDGET_ID = "freepi-meter";
 
@@ -38,7 +38,10 @@ export async function renderMeter(deps: AdsDeps, ctx: ExtensionContext): Promise
     return;
   }
 
-  const theme = ctx.ui.theme as ThemeLike;
+  // No theme means no terminal to draw into (headless RPC mode): the widget
+  // write is a no-op there, so stop before doing any of the work below.
+  const theme = resolveTheme(ctx.ui);
+  if (!theme) return;
   const credit = typeof me.credit_usd === "number" ? me.credit_usd : undefined;
   const added = credit !== undefined && lastCreditUsd !== undefined ? credit - lastCreditUsd : 0;
   lastCreditUsd = credit;
