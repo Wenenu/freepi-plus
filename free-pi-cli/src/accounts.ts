@@ -83,6 +83,11 @@ export function listAccounts(agentDir: string = getFreePiAgentDir()): AccountInf
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((entry) => !entry.startsWith("."))
+    // readdir order is filesystem-defined (ext4 returns hash order, NTFS usually
+    // lexical), and /accounts offers 1-based switching — so the list must be
+    // sorted here or "switch to account 2" picks a different account on Linux
+    // than the list the user just read.
+    .sort()
     .map((id) => {
       const info = loadAccountInfo(join(dir, id));
       return info;
