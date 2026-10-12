@@ -3,7 +3,9 @@
 // Types imported (type-only, erased at runtime — see note below) from the
 // published package's real ProviderConfig/ProviderModelConfig
 // (@earendil-works/pi-coding-agent@0.84.2, dist/core/extensions/types.d.ts).
-import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type { ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { ANTSEED_DEFAULT_BASE_URL, ANTSEED_PROVIDER_NAME } from "./antseed";
+import { ANTSEED_DEFAULT_MODELS } from "./antseed-models";
 import { CLI_VERSION } from "./version";
 
 export const PROVIDER_NAME = "free-pi";
@@ -81,26 +83,64 @@ export function buildProviderConfig(
   };
 }
 
-export { ANTSEED_DEFAULT_MODELS } from "./antseed-models";
+// A plain re-export (`export { X } from "./mod"`) does NOT put X in this
+// module's own scope — the default argument below referenced an undefined
+// `ANTSEED_DEFAULT_MODELS` and threw a ReferenceError the moment the provider
+// extension loaded (which silently left the antseed provider unregistered and
+// made every /provider antseed switch a no-op). Import it for local use and
+// re-export the same binding so importers keep working.
+export { ANTSEED_DEFAULT_MODELS };
 
 export function buildAntseedProviderConfig(
-  baseUrl: string = "http://127.0.0.1:8377",
+  baseUrl: string = antseedBaseUrl(),
   models: CatalogModel[] = ANTSEED_DEFAULT_MODELS,
 ): ProviderConfig {
   return {
-    name: "antseed",
+    name: ANTSEED_PROVIDER_NAME,
     baseUrl: completionsBaseUrl(baseUrl),
-    apiKey: "antseed-local",
+    apiKey: ANTSEED_LOCAL_API_KEY,
     api: "openai-completions",
-    models: models.map((m) => ({
-      id: m.id,
-      name: m.name,
-      reasoning: m.id.includes("reasoner") || m.id.includes("r1"),
-      input: ["text"] as const,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 131_072,
-      maxTokens: 8192,
-    })),
+    models: models.map((m) => antseedModelConfig(m.id, m.name)),
   };
+}
+
+/**
+ * The buyer proxy ignores this value (it authenticates by the on-chain buyer
+ * identity key), but pi requires a provider-level API key to consider the
+ * provider "configured" — that is what makes `pi.setModel()` accept an antseed
+ * model. A literal (not $ENV) keeps `configuredRequestAuthStatus` true.
+ */
+export const ANTSEED_LOCAL_API_KEY = "antseed-local";
+
+/** One Antseed model definition, in the shape `registerProvider` wants. */
+export function antseedModelConfig(id: string, name: string = id): ProviderModelConfig {
+  return {
+    id,
+    name,
+    reasoning: id.includes("reasoner") || id.includes("r1"),
+    input: ["text"] as const,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 131_072,
+    maxTokens: 8192,
+  };
+}
+
+/**
+ * A `peerId@model` target (see commands.ts) is not in the advertised catalog,
+ * so we synthesize it: the peer id is folded into the picker label and
+ * truncated, because a raw 40-hex peer id is unreadable in a 1-line footer.
+ */
+export function customAntseedModel(id: string): CatalogModel {
+  const at = id.indexOf("@");
+  if (at <= 0) return { id, name: id };
+  const peer = id.slice(0, at);
+  const model = id.slice(at + 1);
+  return { id, name: `${model} [${peer.slice(0, 8)}]` };
+}
+
+/** The buyer proxy's address. `ANTSEED_BASE_URL` overrides it (tests, remote buyers). */
+export function antseedBaseUrl(env: Record<string, string | undefined> = process.env): string {
+  const raw = env.ANTSEED_BASE_URL?.trim();
+  return raw && raw.length > 0 ? raw : ANTSEED_DEFAULT_BASE_URL;
 }
 

@@ -25,6 +25,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionServices,
   SessionManager,
+  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_TOOL_NAMES, buildRuntimeOptions, resolveModelName, type LaunchOptions } from "../src/pi-launch";
 import { MODEL_ID, SAFE_TOOLS } from "../src/provider";
@@ -41,18 +42,25 @@ function baseOpts(baseUrl: string): LaunchOptions {
   return { baseUrl, jwt: "test-jwt", agentDir: tempDir("free-pi-agentdir-") };
 }
 
+/** An inline extension is either a bare factory or {name, factory}. */
+function factoryOf(ext: InlineExtension): (pi: never) => void {
+  return (typeof ext === "function" ? ext : ext.factory) as (pi: never) => void;
+}
+
 describe("closed extension list (#28 R20, SB1)", () => {
-  test("buildRuntimeOptions registers exactly the ten known extensions — no more, no less", () => {
+  test("buildRuntimeOptions registers exactly the eleven known extensions — no more, no less", () => {
     const opts = buildRuntimeOptions(baseOpts("http://example.test"), "session-a");
     // #226: the closed set deliberately grew to six with free-pi-buy-tool;
     // 2026-09-01: to seven with free-pi-error-notice (one readable line on a
     // 429); 2026-09-03: to eight with free-pi-header (the startup header,
     // U1/U2); 2026-09-03: to nine with free-pi-docs-tool (the free_pi_docs
-    // tool, U2); 2026-10: to ten with free-pi-antseed-deposit-tool.
+    // tool, U2); 2026-10: to ten with free-pi-antseed-deposit-tool, and to
+    // eleven with free-pi-antseed-status (the Antseed footer line).
     expect([...opts.extensionNames].sort()).toEqual(
       [
         "free-pi-ads",
         "free-pi-antseed-deposit-tool",
+        "free-pi-antseed-status",
         "free-pi-buy-tool",
         "free-pi-commands",
         "free-pi-docs-tool",
@@ -126,16 +134,24 @@ describe("closed extension list (#28 R20, SB1)", () => {
     expect(providerExt).toBeDefined();
 
     const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+    const sentMessages: string[] = [];
     const fakePi = {
       registerProvider: () => {},
       on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => {
         handlers[name] = handler;
       },
+      sendUserMessage: (content: string) => {
+        sentMessages.push(content);
+      },
     };
-    providerExt!.factory(fakePi as never);
+    factoryOf(providerExt!)(fakePi as never);
 
     expect(handlers["message_end"]).toBeDefined();
     const messageEnd = handlers["message_end"]!;
+
+    // The extension notifies (and, on a quota error, re-routes the model), so
+    // the ctx carries both — same shape pi's runner hands an extension.
+    const freePiCtx = { model: { provider: "free-pi", id: "deepseek/deepseek-v4-flash" }, ui: { notify: () => {} } };
 
     const rawError = '413: {"message":"prompt is 800036 characters; the limit is 800000","code":"context_ceiling","type":"free_pi_error"}';
     const fakeMsg = {
@@ -145,22 +161,25 @@ describe("closed extension list (#28 R20, SB1)", () => {
       errorMessage: rawError,
     };
 
-    const res = (await messageEnd({ type: "message_end", message: fakeMsg }, { model: { provider: "free-pi" } })) as { message?: { errorMessage?: string } };
+    const res = (await messageEnd({ type: "message_end", message: fakeMsg }, freePiCtx)) as { message?: { errorMessage?: string } };
     expect(res?.message?.errorMessage).toBe(`context_length_exceeded: ${rawError}`);
 
     // Idempotent: does not double-prefix
-    const res2 = (await messageEnd({ type: "message_end", message: res!.message }, { model: { provider: "free-pi" } })) as unknown;
+    const res2 = (await messageEnd({ type: "message_end", message: res!.message }, freePiCtx)) as unknown;
     expect(res2).toBeUndefined();
 
-    // Ignores other errors or non-assistant roles
+    // A quota error is not rewritten — it is the signal to fall back to Antseed
+    // (which must actually move the model off free-pi, not just notify).
     const nonCeilingMsg = {
       role: "assistant",
       stopReason: "error",
       provider: "free-pi",
       errorMessage: '429: {"message":"rate limited","code":"daily_cap"}',
     };
-    const res3 = (await messageEnd({ type: "message_end", message: nonCeilingMsg }, { model: { provider: "free-pi" } })) as unknown;
+    const res3 = (await messageEnd({ type: "message_end", message: nonCeilingMsg }, freePiCtx)) as unknown;
     expect(res3).toBeUndefined();
+    expect(freePiCtx.model.provider).toBe("antseed");
+    expect(sentMessages).toEqual(["Continue with the task using Antseed"]);
 
     // Recovers tool calls emitted as text into structured ToolCall items with stopReason="toolUse"
     const textToolMsg = {
@@ -174,7 +193,7 @@ describe("closed extension list (#28 R20, SB1)", () => {
         },
       ],
     };
-    const res4 = (await messageEnd({ type: "message_end", message: textToolMsg }, { model: { provider: "free-pi" } })) as {
+    const res4 = (await messageEnd({ type: "message_end", message: textToolMsg }, freePiCtx)) as {
       message: { stopReason: string; content: any[] };
     };
     expect(res4).toBeDefined();
@@ -201,7 +220,7 @@ describe("closed extension list (#28 R20, SB1)", () => {
         sentMessages.push({ content, options });
       },
     };
-    providerExt!.factory(fakePi as never);
+    factoryOf(providerExt!)(fakePi as never);
 
     expect(handlers["agent_end"]).toBeDefined();
     const agentEnd = handlers["agent_end"]!;
@@ -246,7 +265,7 @@ describe("closed extension list (#28 R20, SB1)", () => {
         sentMessages.push({ content, options });
       },
     };
-    providerExt!.factory(fakePi as never);
+    factoryOf(providerExt!)(fakePi as never);
 
     expect(handlers["session_compact"]).toBeDefined();
     const sessionCompact = handlers["session_compact"]!;
@@ -274,7 +293,7 @@ describe("closed extension list (#28 R20, SB1)", () => {
         sentMessages.push({ content, options });
       },
     };
-    providerExt!.factory(fakePi as never);
+    factoryOf(providerExt!)(fakePi as never);
 
     const sessionCompact = handlers["session_compact"]!;
 

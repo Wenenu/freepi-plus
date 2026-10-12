@@ -1,4 +1,18 @@
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
+
+/** Details shape shared by both outcomes of the deposit tool. */
+interface DepositDetails {
+  ok: boolean;
+  address?: string;
+  network?: string;
+  error?: string;
+}
+
+/** Both branches resolve the same shape, so the tool's generic isn't widened. */
+interface ToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  details: DepositDetails;
+}
 import { Type } from "typebox";
 import { getAntseedDepositAddress, ANTSEED_DEPOSIT_TOOL_NAME } from "./antseed";
 
@@ -21,7 +35,7 @@ export function createAntseedDepositToolExtension(): InlineExtension {
           "Fetches the USDC funding address and instructions to deposit funds into the Antseed P2P AI inference node. AI agents can use this tool to discover the deposit address and send USDC (Base network) to pay for inference.",
         promptSnippet: "Get Antseed USDC deposit address and instructions to fund P2P AI inference",
         parameters: PARAMS,
-        async execute(args) {
+        async execute(_toolCallId, args): Promise<ToolResult> {
           try {
             const result = await getAntseedDepositAddress();
             let msg = `### Antseed USDC Deposit Details\n\n`;

@@ -8,6 +8,8 @@ import {
   openTos,
   PRIVACY_URL,
   runUpdate,
+  showAntseed,
+  showAntseedBalance,
   showModel,
   showProvider,
   showUsage,
@@ -401,5 +403,60 @@ describe("/antseed (showAntseed)", () => {
     );
     expect((ctx as any).model.provider).toBe("antseed");
     expect(notes[0]?.msg).toContain("Switched active provider to Antseed");
+  });
+
+  test("/antseed balance shows available, reserved and the running daemon", async () => {
+    const { ctx, notes } = notifyCtx();
+    await showAntseed(
+      {
+        baseUrl: "https://api.test",
+        getToken: () => "jwt",
+        fetchBalance: async () => ({
+          address: "0x25108E51c7ecA58976320117C969cd021D869644",
+          availableUsd: 0.45,
+          reservedUsd: 2,
+          connectionState: "connected",
+          activeChannels: 2,
+        }),
+      },
+      ctx as any,
+      "balance",
+    );
+    const out = notes[0]?.msg ?? "";
+    expect(out).toContain("Available: $0.45");
+    expect(out).toContain("Reserved:  $2.00");
+    expect(out).toContain("Total:     $2.45");
+    expect(out).toContain("Buyer daemon: connected");
+    expect(notes[0]?.type).toBe("info");
+  });
+
+  test("/antseed balance without a reachable CLI warns instead of throwing", async () => {
+    const { ctx, notes } = notifyCtx();
+    await showAntseedBalance(
+      { baseUrl: "https://api.test", getToken: () => "jwt", fetchBalance: async () => undefined },
+      ctx as any,
+    );
+    expect(notes[0]?.type).toBe("warning");
+    expect(notes[0]?.msg).toContain("antseed buyer balance");
+  });
+
+  test("a switch the runtime refuses is reported as an error, with the current model kept", async () => {
+    const { ctx, notes } = notifyCtx();
+    (ctx as any).model = { provider: "free-pi", id: "deepseek/deepseek-v4-flash" };
+    const registry = { find: () => undefined };
+    const pi = {
+      registerProvider: () => {},
+      setModel: async () => false,
+    };
+    await showModel(
+      { baseUrl: "https://api.test", getToken: () => "jwt" },
+      { ...ctx, modelRegistry: registry } as any,
+      "666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol",
+      pi as any,
+    );
+    expect(notes[0]?.type).toBe("error");
+    expect(notes[0]?.msg).toContain("Couldn't switch to [antseed]");
+    expect(notes[0]?.msg).toContain("antseed buyer start");
+    expect((ctx as any).model.provider).toBe("free-pi");
   });
 });

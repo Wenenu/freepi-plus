@@ -34,6 +34,8 @@ import { patchResumeLine } from "./resume-line";
 import { extractTextToolCalls } from "./text-tool-parser";
 import { ANTSEED_DEPOSIT_TOOL_NAME, ANTSEED_PROVIDER_NAME } from "./antseed";
 import { createAntseedDepositToolExtension } from "./antseed-deposit-tool";
+import { createAntseedStatusExtension } from "./antseed-status";
+import { applyModelSwitch } from "./model-switch";
 
 export interface LaunchOptions {
   baseUrl: string;
@@ -125,15 +127,19 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
       pi.registerProvider(PROVIDER_NAME, buildProviderConfig(opts.baseUrl, opts.jwt, sessionId, models));
       pi.registerProvider(ANTSEED_PROVIDER_NAME, buildAntseedProviderConfig());
 
-      pi.on("before_provider_headers", (event) => {
-        // Only attach FreePI bearer auth when talking to free-pi provider
-        if (event.provider === PROVIDER_NAME) {
-          const token = getCurrentToken();
-          event.headers["authorization"] = `Bearer ${token}`;
-          event.headers["Authorization"] = `Bearer ${token}`;
-        }
+      pi.on("before_provider_headers", (event, ctx) => {
+        // Only attach FreePI bearer auth when the request is headed to the
+        // free-pi provider. The event itself carries no provider id (see
+        // BeforeProviderHeadersEvent — headers only), so the active model is
+        // what identifies the target; `event.provider` was always undefined
+        // here, which silently disabled the per-request token refresh (so a
+        // /switch-account only took effect after a restart).
+        if (ctx.model?.provider !== PROVIDER_NAME) return;
+        const token = getCurrentToken();
+        event.headers["authorization"] = `Bearer ${token}`;
+        event.headers["Authorization"] = `Bearer ${token}`;
       });
-      pi.on("message_end", (event, ctx) => {
+      pi.on("message_end", async (event, ctx) => {
         const message = event.message;
         if (message.role !== "assistant") return;
 
@@ -148,15 +154,22 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
               errorMessage.includes("limit_exceeded"))
           ) {
             const antseedModel = ANTSEED_DEFAULT_MODELS[0]!.id;
-            try {
-              (ctx as any).model = { provider: ANTSEED_PROVIDER_NAME, id: antseedModel };
+            // Goes through the same checked switch the /antseed commands use:
+            // writing ctx.model directly never worked (the SDK exposes it as a
+            // readonly getter), so this fallback used to announce a switch and
+            // then let the next turn fail against free-pi all over again.
+            const switched = await applyModelSwitch(ANTSEED_PROVIDER_NAME, antseedModel, ctx, pi);
+            if (switched.ok) {
               ctx.ui.notify(
                 `FreePI quota exhausted. Automatically switched inference to Antseed P2P (${antseedModel}).`,
                 "warning",
               );
               pi.sendUserMessage("Continue with the task using Antseed", { deliverAs: "followUp" });
-            } catch {
-              // fallback notification if auto-switch fails
+            } else {
+              ctx.ui.notify(
+                `FreePI quota exhausted, and the Antseed fallback could not start${switched.reason ? ` (${switched.reason})` : ""}.\nFund Antseed (antseed buyer deposit) and start it with: antseed buyer start`,
+                "error",
+              );
             }
             return;
           }
@@ -302,8 +315,8 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     updateLatest: opts.updateLatest,
   });
 
-  // Closed, NINE-item list — SB1's structural test fails if a future edit
-  // adds a tenth extension or drops one of these. Settings deliberately
+  // Closed, ELEVEN-item list — SB1's structural test fails if a future edit
+  // adds a twelfth extension or drops one of these. Settings deliberately
   // omit `packages` (no pi-packages installed, so no MCP adapter / subagent
   // extension can be pulled in) and pin `defaultTools` to the built-in tool
   // set (never includes a subagent/background-bash/MCP tool per pi's own
@@ -311,6 +324,11 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
   // there is nothing else to turn off — free-pi-cli's job is to never opt
   // back into them.
   const antseedDepositToolExtension: InlineExtension = createAntseedDepositToolExtension();
+
+  // 2026-10: the Antseed footer line — which antseed model is active and how
+  // much USDC is left to pay for it. UI-lifecycle hooks only (no context, no
+  // session writes); see antseed-status.ts.
+  const antseedStatusExtension: InlineExtension = createAntseedStatusExtension();
 
   const extensionFactories = [
     providerExtension,
@@ -323,6 +341,7 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
     commandsExtension,
     headerExtension,
     antseedDepositToolExtension,
+    antseedStatusExtension,
   ];
 
   const settingsManager = SettingsManager.inMemory({

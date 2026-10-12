@@ -13,6 +13,41 @@ A hardened, quality-of-life-enhanced fork of [free-pi-cli](https://github.com/ea
 | Auto-executes text tool calls (`<bash>`, DSML, `<invoke>`, JSON) | ✅ |
 | Antseed P2P auto-fallback on quota exhaustion (429 / daily cap) | ✅ |
 | `antseed_deposit_usdc` built-in tool to fund inference balance | ✅ |
+| `/provider` and `/model` — switch provider/model at runtime (free-pi or Antseed) | ✅ |
+| `/antseed model <peerId>@<model>` — target one specific Antseed peer's model | ✅ |
+| Antseed footer line: active model + remaining USDC balance | ✅ |
+| `/antseed balance` — available / reserved / total USDC + buyer daemon state | ✅ |
+
+---
+
+## Antseed (P2P inference)
+
+[Antseed](https://antseed.com) is a decentralized inference network on Base L2: buyers
+deposit USDC, and the local `antseed buyer` daemon proxies OpenAI-compatible
+requests to peers.
+
+```bash
+antseed buyer deposit      # show the USDC funding address (gasless sweep)
+antseed buyer start        # run the buyer proxy on http://127.0.0.1:8377
+```
+
+Then, inside `freepi`:
+
+```
+/provider antseed              # use the P2P network (583 advertised models)
+/model                         # pick one
+/antseed model <peerId>@<model>  # or target a specific peer directly
+/antseed balance               # how much USDC is left
+```
+
+While an Antseed model is active, the footer shows it and the balance:
+
+```
+[Antseed] 666e6887…@gpt-6.1-sol · $0.45 USDC left · $2.00 reserved
+```
+
+Set `ANTSEED_BASE_URL` to point the provider at a buyer proxy on another host,
+and `ANTSEED_CLI_COMMAND` when the `antseed` CLI isn't on `PATH`.
 
 ---
 

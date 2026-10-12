@@ -10,6 +10,14 @@ import { openBrowser } from "./browser";
 import { BUY_NOT_AVAILABLE_TEXT, buyPageText, resolveBuyPage } from "./buy-tool";
 import { fetchUsageText } from "./usage-tool";
 import { type CatalogModel, ANTSEED_DEFAULT_MODELS, MODEL_ID } from "./provider";
+import { ANTSEED_DEFAULT_BASE_URL, ANTSEED_PROVIDER_NAME, fetchAntseedBalance, type AntseedBalance } from "./antseed";
+import { formatUsdc } from "./antseed-status";
+import {
+  applyModelSwitch,
+  rememberedAntseedModels,
+  type ModelSwitchContext,
+  type ModelSwitchResult,
+} from "./model-switch";
 import { join } from "node:path";
 import {
   listAccounts,
@@ -47,6 +55,8 @@ export interface CreateCommandsOptions {
   models?: CatalogModel[];
   /** Selectable antseed models */
   antseedModels?: CatalogModel[];
+  /** Reads the buyer's USDC balance; injected in tests. */
+  fetchBalance?: () => Promise<AntseedBalance | undefined>;
 }
 
 /** Minimal shape of the command context we use — notify and optional interactive UI methods. */
@@ -447,34 +457,33 @@ export function runCompact(ctx: NotifyContext): Promise<void> {
 
 // ---- /provider ------------------------------------------------------------
 
-async function applyModelSwitch(
+/**
+ * Switches provider/model and, when the runtime refuses, says so instead of
+ * claiming success. The mechanics (registering a model pi doesn't know yet,
+ * checking setModel's return value) live in model-switch.ts, shared with the
+ * provider extension's quota fallback in pi-launch.ts.
+ */
+async function switchOrNotify(
   provider: string,
   modelId: string,
   ctx: NotifyContext,
   pi?: ExtensionAPI,
-): Promise<boolean> {
-  // Production: use pi.setModel (the proper, non-readonly API)
-  if (pi && typeof pi.setModel === "function") {
-    const registry = (ctx as any).modelRegistry;
-    let targetModel = registry?.find ? registry.find(provider, modelId) : undefined;
-    if (!targetModel) {
-      targetModel = { provider, id: modelId };
-    }
-    try {
-      await pi.setModel(targetModel);
-      return true;
-    } catch {
-      // fall through to direct assignment below
-    }
+): Promise<ModelSwitchResult> {
+  const result = await applyModelSwitch(provider, modelId, ctx as ModelSwitchContext, pi);
+  if (!result.ok) {
+    ctx.ui.notify(switchFailureText(provider, modelId, result.reason), "error");
   }
-  // Fallback: direct assignment (works in tests and older SDK contexts)
-  try {
-    (ctx as any).model = { provider, id: modelId };
-    return true;
-  } catch {
-    // truly readonly — nothing we can do
-  }
-  return false;
+  return result;
+}
+
+/** One readable line, plus the fix, for a switch the runtime rejected. */
+export function switchFailureText(provider: string, modelId: string, reason?: string): string {
+  const detail = reason ? ` (${reason})` : "";
+  const hint =
+    provider === ANTSEED_PROVIDER_NAME
+      ? `\nAntseed routes through the local buyer proxy at ${ANTSEED_DEFAULT_BASE_URL} — start it with: antseed buyer start`
+      : "";
+  return `Couldn't switch to [${provider}] ${modelId}${detail}.${hint}`;
 }
 
 export async function showProvider(
@@ -503,7 +512,8 @@ export async function showProvider(
   if (arg) {
     const match = providers.find((p) => p.id === arg || p.id.replace("-", "") === arg);
     if (match) {
-      await applyModelSwitch(match.id, match.defaultModel, ctx, pi);
+      const result = await switchOrNotify(match.id, match.defaultModel, ctx, pi);
+      if (!result.ok) return;
       ctx.ui.notify(
         `Switched active provider to ${match.name}.\nDefault model: ${match.defaultModel}\n${match.desc}`,
         "info",
@@ -528,7 +538,8 @@ export async function showProvider(
       const idx = parseInt(matchIdx[1], 10) - 1;
       const chosen = providers[idx];
       if (chosen) {
-        await applyModelSwitch(chosen.id, chosen.defaultModel, ctx, pi);
+        const result = await switchOrNotify(chosen.id, chosen.defaultModel, ctx, pi);
+        if (!result.ok) return;
         ctx.ui.notify(
           `Switched active provider to ${chosen.name}.\nDefault model: ${chosen.defaultModel}`,
           "info",
@@ -560,8 +571,12 @@ export async function showModel(
 
   const freePiModels: CatalogModel[] =
     opts.models && opts.models.length > 0 ? opts.models : [{ id: MODEL_ID, name: MODEL_ID }];
-  const antseedModels: CatalogModel[] =
-    opts.antseedModels && opts.antseedModels.length > 0 ? opts.antseedModels : ANTSEED_DEFAULT_MODELS;
+  // Remembered peer targets (`peerId@model`) stay in the picker for the rest of
+  // the session even though no network catalog advertises them.
+  const antseedModels: CatalogModel[] = [
+    ...(opts.antseedModels && opts.antseedModels.length > 0 ? opts.antseedModels : ANTSEED_DEFAULT_MODELS),
+    ...rememberedAntseedModels(),
+  ];
 
   const availableModels = currentProvider === "antseed" ? antseedModels : freePiModels;
 
@@ -575,7 +590,8 @@ export async function showModel(
         m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === lowerArg.replace(/[^a-z0-9]/g, ""),
     );
     if (match) {
-      await applyModelSwitch(currentProvider, match.id, ctx, pi);
+      const result = await switchOrNotify(currentProvider, match.id, ctx, pi);
+      if (!result.ok) return;
       ctx.ui.notify(
         `Switched model to "${match.name}" (${match.id}) on provider [${currentProvider}].`,
         "info",
@@ -592,7 +608,8 @@ export async function showModel(
         m.id.toLowerCase().replace(/[^a-z0-9]/g, "") === lowerArg.replace(/[^a-z0-9]/g, ""),
     );
     if (otherMatch) {
-      await applyModelSwitch(otherProvider, otherMatch.id, ctx, pi);
+      const result = await switchOrNotify(otherProvider, otherMatch.id, ctx, pi);
+      if (!result.ok) return;
       ctx.ui.notify(
         `Switched provider to [${otherProvider}] and model to "${otherMatch.name}" (${otherMatch.id}).`,
         "info",
@@ -601,8 +618,9 @@ export async function showModel(
     }
 
     // Direct peer@model or custom model identifier support (e.g. 666e688780b9fdee5d2fe8ccafa666bb084c4666@gpt-6.1-sol)
-    if (arg.includes("@") || currentProvider === "antseed") {
-      await applyModelSwitch("antseed", arg, ctx, pi);
+    if (arg.includes("@") || currentProvider === ANTSEED_PROVIDER_NAME) {
+      const result = await switchOrNotify(ANTSEED_PROVIDER_NAME, arg, ctx, pi);
+      if (!result.ok) return;
       ctx.ui.notify(
         `Switched provider to [antseed] and model to custom ID "${arg}".`,
         "info",
@@ -631,7 +649,8 @@ export async function showModel(
       const idx = parseInt(matchIdx[1], 10) - 1;
       const chosen = availableModels[idx];
       if (chosen) {
-        await applyModelSwitch(currentProvider, chosen.id, ctx, pi);
+        const result = await switchOrNotify(currentProvider, chosen.id, ctx, pi);
+        if (!result.ok) return;
         ctx.ui.notify(
           `Switched model to "${chosen.name}" (${chosen.id}) on provider [${currentProvider}].`,
           "info",
@@ -662,9 +681,10 @@ export async function showAntseed(
   const trimmed = args?.trim();
   if (!trimmed) {
     // Just /antseed with no args: switch provider to antseed and show model list / info
-    await applyModelSwitch("antseed", "deepseek-v4-flash", ctx, pi);
+    const result = await switchOrNotify(ANTSEED_PROVIDER_NAME, "deepseek-v4-flash", ctx, pi);
+    if (!result.ok) return;
     ctx.ui.notify(
-      `Switched active provider to Antseed (P2P AI Network).\nUsage:\n  /antseed model <model-id or peer@model>\n  /model\n  /provider`,
+      `Switched active provider to Antseed (P2P AI Network).\nUsage:\n  /antseed model <model-id or peer@model>\n  /antseed balance\n  /model\n  /provider`,
       "info",
     );
     return;
@@ -685,8 +705,51 @@ export async function showAntseed(
     return;
   }
 
+  if (subcmd === "balance" || subcmd === "status") {
+    await showAntseedBalance(opts, ctx);
+    return;
+  }
+
   // If user typed e.g. /antseed peer@model or /antseed modelId directly
   await showModel(opts, ctx, trimmed, pi);
+}
+
+// ---- /antseed balance -----------------------------------------------------
+
+/**
+ * The detail view for the footer's one-liner: the same number, plus where it
+ * lives and what the buyer daemon is doing. Never throws — a missing antseed CLI
+ * is the common case on a machine that never funded a wallet.
+ */
+export async function showAntseedBalance(
+  opts: CreateCommandsOptions,
+  ctx: NotifyContext,
+): Promise<void> {
+  const balance = await (opts.fetchBalance ?? (() => fetchAntseedBalance()))();
+  if (!balance) {
+    ctx.ui.notify(
+      `Couldn't read your Antseed balance.\nThe antseed CLI must be installed and able to reach Base: antseed buyer balance`,
+      "warning",
+    );
+    return;
+  }
+
+  const lines = ["Antseed inference balance (USDC on Base)"];
+  lines.push(`  Available: ${formatUsdc(balance.availableUsd)} — spendable now`);
+  if (balance.reservedUsd !== undefined) {
+    lines.push(`  Reserved:  ${formatUsdc(balance.reservedUsd)} — committed to open payment channels`);
+  }
+  const total = (balance.availableUsd ?? 0) + (balance.reservedUsd ?? 0);
+  lines.push(`  Total:     ${formatUsdc(total)}`);
+  if (balance.walletUsd !== undefined) {
+    lines.push(`  Hot wallet: ${formatUsdc(balance.walletUsd)} (sweep it in with: antseed buyer sweep)`);
+  }
+  if (balance.address) lines.push(`  Wallet: ${balance.address}`);
+  if (balance.connectionState) lines.push(`  Buyer daemon: ${balance.connectionState}`);
+  if (balance.activeChannels !== undefined) lines.push(`  Active channels: ${balance.activeChannels}`);
+  lines.push("");
+  lines.push(`Top up: antseed buyer deposit   ·   Address it routes through: ${ANTSEED_DEFAULT_BASE_URL}`);
+  ctx.ui.notify(lines.join("\n"), "info");
 }
 
 // ---- /usage ---------------------------------------------------------------
@@ -756,7 +819,8 @@ export function createFreePiCommandsExtension(opts: CreateCommandsOptions): Inli
         handler: async (args, ctx) => showModel(opts, ctx, args, pi),
       });
       pi.registerCommand("antseed", {
-        description: "Manage Antseed P2P network (switch model, e.g. /antseed model <peer@model>).",
+        description:
+          "Manage Antseed P2P network (switch model, e.g. /antseed model <peer@model>; /antseed balance).",
         handler: async (args, ctx) => showAntseed(opts, ctx, args, pi),
       });
     },
