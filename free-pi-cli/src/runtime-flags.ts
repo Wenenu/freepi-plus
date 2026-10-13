@@ -17,4 +17,11 @@ export const runtimeFlags = {
    * free-pi's default model.
    */
   pendingModel: null as { provider: string; model: string } | null,
+  /**
+   * The four-sentence brief the replaced session left behind, injected into the
+   * new session's system prompt for its whole life. Same channel and same reason
+   * as `pendingModel`: the instance that has it is stale by the time the
+   * replacement exists.
+   */
+  pendingBrief: null as string | null,
 };

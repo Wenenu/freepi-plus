@@ -57,6 +57,16 @@ build); this file is the fuller human record.
   model.
 
 ### Added
+- **The next chat starts briefed.** A rotation no longer only leaves a document: the
+  session that is ending is asked to close with **exactly four sentences** — where
+  the work stands, what it was doing, what is next, what must not be repeated — and
+  that reply is injected into the replacement's **system prompt**, so it is present
+  in every request the new session makes instead of depending on the model opening
+  a file. The brief is also written to `~/.free-pi/agent/handoff/latest-brief.md`
+  (with a timestamped copy) and recorded in the handoff record; `/rotate status`
+  says whether the session is running on one. If the closing reply is unusable
+  ("handoff written"), the first four sentences of the document's body supply the
+  brief instead, and with neither, the system prompt is left exactly as it was.
 - **Keepalive**: an idle session is nudged to continue (`/keepalive status | off |
   on | now`; `FREEPI_KEEPALIVE=0` disables). A running turn is never interrupted,
   and a turn that ended on printed tool markup is nudged at the next check rather
@@ -64,8 +74,9 @@ build); this file is the fuller human record.
 - **Rotation, every 3 hours**: the session writes a full handoff document, then the
   task continues in a **new session with the same provider and model**. The
   document is quoted into the new session's context (up to 60k characters; the
-  file is named for anything beyond that), and the message that opens the session
-  tells it to carry on from there
+  file is named for anything beyond that), a four-sentence brief of the session
+  goes into its system prompt, and the message that opens the session tells it to
+  carry on from there
   (`/rotate status | now | off | on`; `FREEPI_ROTATE=0` disables,
   `FREEPI_ROTATE_MS` sets the shift). Documents and records live in
   `~/.free-pi/agent/handoff/`. A missing document is retried once and then noted in

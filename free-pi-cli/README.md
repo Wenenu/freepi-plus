@@ -103,11 +103,16 @@ run going:
   own `session_start` puts it back through the checked model switch. The handoff
   document is **quoted into the new session's context**, so the next chat has it
   even if its first turn never opens the file, and the message that opens it
-  names the file as well. No context death, no restart of the TUI.
+  names the file as well. On top of that the ending session closes with a
+  **four-sentence brief** of where the work stands, which goes into the new
+  session's **system prompt** — so every request it makes is already oriented,
+  which a handoff document alone cannot guarantee. `/rotate status` says whether
+  the session is running on one. No context death, no restart of the TUI.
   `/rotate status | now | off | on` controls it.
 
-Handoff documents and their records live in `~/.free-pi/agent/handoff/`
-(`summary-<timestamp>.md` beside `latest.json`). If the agent never writes the
+Handoff documents, briefs and their records live in `~/.free-pi/agent/handoff/`
+(`summary-<timestamp>.md`, `brief-<timestamp>.md`, `latest-brief.md` and
+`latest.json`). If the agent never writes the
 document, the rotation retries once, then goes ahead anyway and says so in the
 handoff — an unattended run must not stall on a missing file. A document too big
 for the quote (60k characters) is quoted up to that point and the file named in

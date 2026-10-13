@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { handoffDir, handoffPath } from "../src/handoff";
+import { BRIEF_MARKER, handoffDir, handoffPath, latestBriefPath, readBrief } from "../src/handoff";
 import { ROTATE_NOW_COMMAND, createRotateExtension } from "../src/rotate";
 import { runtimeFlags } from "../src/runtime-flags";
 
@@ -46,8 +46,32 @@ interface Harness {
   sessionCtx: Record<string, unknown>;
   cancelled: boolean;
   /** Fire the events the runtime fires, and let the injected command run. */
-  event: (name: string) => Promise<void>;
+  event: (name: string, messages?: unknown[]) => Promise<void>;
   runCommand: (name: string, args?: string) => Promise<void>;
+}
+
+const assistantMessage = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+
+/**
+ * The system prompt the runtime would use for a turn, after every extension has
+ * had its say — the value the new session's first request is built from.
+ */
+function systemPromptWith(h: Harness, base = "BASE PROMPT"): string {
+  const result = h.events.get("before_agent_start")?.(
+    { type: "before_agent_start", systemPrompt: base, prompt: "carry on", systemPromptOptions: {} },
+    h.sessionCtx,
+  );
+  return (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? base;
+}
+
+/** Stand in for the replacement session's own session_start (a fresh instance). */
+function replacementCtx() {
+  return {
+    cwd: agentDir,
+    model: { provider: "free-pi", id: "deepseek-v4-flash" },
+    sessionManager: {},
+    ui: { notify: () => {}, setStatus: () => {} },
+  };
 }
 
 function mount(opts: { rotateMs?: number; graceMs?: number; tickMs?: number } = {}): Harness {
@@ -142,8 +166,8 @@ function mount(opts: { rotateMs?: number; graceMs?: number; tickMs?: number } = 
     set cancelled(value: boolean) {
       state.cancelled = value;
     },
-    event: async (name: string) => {
-      await events.get(name)?.({ type: name, messages: [] }, sessionCtx);
+    event: async (name: string, messages: unknown[] = []) => {
+      await events.get(name)?.({ type: name, messages }, sessionCtx);
     },
     runCommand: async (name: string, args = "") => {
       await commands.get(name)?.(args, commandCtx);
@@ -186,7 +210,8 @@ describe("rotate — the 3-hour shift", () => {
     const request = h.sends[0]?.text ?? "";
     expect(request).toContain("handoff document");
     expect(request).toContain(handoffDir(agentDir));
-    expect(request).toContain("HANDOFF READY");
+    // The closing reply is asked for as the next chat's standing brief.
+    expect(request).toContain("exactly 4 sentences");
     // The keepalive must not also be nudging the session while this is pending.
     expect(runtimeFlags.rotationPending).toBe(true);
     h.events.get("session_shutdown")?.({}, {});
@@ -367,6 +392,89 @@ describe("rotate — the 3-hour shift", () => {
     await startAndWait(h);
     expect(h.sends).toHaveLength(0);
     expect(h.notices.join("\n")).toContain("Rotation is off");
+    h.events.get("session_shutdown")?.({}, {});
+  });
+});
+
+describe("rotate — the brief the next chat starts from", () => {
+  const GOOD_BRIEF =
+    "The Kelp audit is stalled on the LRT withdrawal path after the composer check came back clean. " +
+    "I confirmed the share math rounds in the protocol's favour, but could not turn it into an impact. " +
+    "Next: fuzz the liquidation threshold against a forked mainnet state. " +
+    "Do not re-run slither on the vault and do not re-read the storage layout, both are already done.";
+
+  test("the session's closing reply becomes the replacement's system prompt", async () => {
+    const h = mount();
+    await startAndWait(h);
+    const summaryPath = /(\S+summary-[^\s]+\.md)/.exec(h.sends[0]?.text ?? "")?.[1] as string;
+    writeFileSync(summaryPath, "# Handoff\n\nDetail that does not fit in four sentences.\n");
+
+    // The turn that wrote the document ends with the brief, as asked for.
+    await h.event("agent_end", [assistantMessage(GOOD_BRIEF)]);
+    await h.runCommand(ROTATE_NOW_COMMAND);
+
+    // Carried in-process to the replacement, and written down in case the
+    // process restarts with the handoff still fresh.
+    expect(runtimeFlags.pendingBrief).toBe(GOOD_BRIEF);
+    expect(readBrief(latestBriefPath(agentDir))).toBe(GOOD_BRIEF);
+    const record = JSON.parse(readFileSync(handoffPath(agentDir), "utf8")) as Record<string, unknown>;
+    expect(record.brief).toBe(GOOD_BRIEF);
+
+    await h.events.get("session_start")?.({ type: "session_start" }, replacementCtx());
+    const prompt = systemPromptWith(h);
+    expect(prompt.startsWith("BASE PROMPT")).toBe(true);
+    expect(prompt).toContain(BRIEF_MARKER);
+    expect(prompt).toContain(GOOD_BRIEF);
+    // ...and it is added once, not once per turn: the prompt the runtime already
+    // carries is left alone.
+    expect(systemPromptWith(h, prompt)).toBe(prompt);
+
+    h.events.get("session_shutdown")?.({}, {});
+  });
+
+  test("a reply too short to orient anyone falls back to the document's own sentences", async () => {
+    const h = mount();
+    await startAndWait(h);
+    const summaryPath = /(\S+summary-[^\s]+\.md)/.exec(h.sends[0]?.text ?? "")?.[1] as string;
+    writeFileSync(
+      summaryPath,
+      "# Handoff\n\n## Where the work stands\n" +
+        "The Kelp audit verified the withdrawal queue and the LRT accounting, both clean. " +
+        "The remaining lead is the composer's slippage bound. " +
+        "Next: write a Foundry fork test for it. " +
+        "Do not repeat the storage-layout pass.\n",
+    );
+
+    await h.event("agent_end", [assistantMessage("Handoff written.")]);
+    await h.runCommand(ROTATE_NOW_COMMAND);
+    await h.events.get("session_start")?.({ type: "session_start" }, replacementCtx());
+
+    const prompt = systemPromptWith(h);
+    expect(prompt).toContain("slippage bound");
+    // The digest is prose: the document's headings are not part of a summary.
+    expect(prompt).not.toContain("Where the work stands");
+    h.events.get("session_shutdown")?.({}, {});
+  });
+
+  test("with no document and no usable reply, the system prompt is left alone", async () => {
+    const h = mount();
+    await startAndWait(h);
+    await h.event("agent_end");
+    await h.event("agent_end");
+    await h.runCommand(ROTATE_NOW_COMMAND);
+    await h.events.get("session_start")?.({ type: "session_start" }, replacementCtx());
+
+    expect(runtimeFlags.pendingBrief).toBeNull();
+    expect(systemPromptWith(h)).toBe("BASE PROMPT");
+    h.events.get("session_shutdown")?.({}, {});
+  });
+
+  test("/rotate status says whether this session is running on a brief", async () => {
+    const h = mount({ rotateMs: 600_000, tickMs: 600_000 });
+    runtimeFlags.pendingBrief = GOOD_BRIEF;
+    await h.events.get("session_start")?.({ type: "session_start" }, replacementCtx());
+    await h.runCommand("rotate", "status");
+    expect(h.notices.join("\n")).toContain("Brief in this session's system prompt: 4 sentences");
     h.events.get("session_shutdown")?.({}, {});
   });
 });

@@ -23,15 +23,23 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import {
+  BRIEF_MARKER,
+  BRIEF_SENTENCES,
   HANDOFF_VERSION,
   type RotationHandoff,
+  briefFromDocument,
+  briefPromptBlock,
+  deriveBrief,
+  freshBrief,
   handoffContext,
   handoffDir,
   handoffPath,
   handoffPrompt,
+  latestBriefPath,
   readHandoff,
   readSummary,
   summaryPathFor,
+  writeBrief,
   writeHandoff as writeHandoffFile,
 } from "./handoff";
 import { applyModelSwitch } from "./model-switch";
@@ -99,7 +107,9 @@ export function summaryRequest(summaryPath: string, sessionFile: string | null):
     "6. Open questions, risks, and anything that did not work.",
     "7. The single next action the new session should take first.",
     "",
-    "This is an operational handoff, not a story about the conversation. When the file is written, reply with one line: HANDOFF READY",
+    "This is an operational handoff, not a story about the conversation.",
+    "",
+    `Then reply with exactly ${BRIEF_SENTENCES} sentences summarising this session for the next chat: where the work stands, what you were doing, what comes next, and anything the next session must not waste time repeating. No heading, no bullets, no preamble, no \"HANDOFF READY\" line — that reply becomes the next session's standing brief, so write it for an agent that has none of your context.`,
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -128,8 +138,14 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
       let provider: string | null = null;
       let model: string | null = null;
       let count = 0;
-      let pending: { summaryPath: string; askedAt: number; retried: boolean } | null = null;
+      let pending: { summaryPath: string; askedAt: number; retried: boolean; brief: string | null } | null = null;
       let busy = false;
+      /**
+       * The brief this session runs under, if it was handed one. Set once from
+       * the rotation that produced the session (or from disk when a process
+       * restarted mid-handoff) and then added to the system prompt of every turn.
+       */
+      let sessionBrief: string | null = null;
 
       const statusLine = (): string => {
         if (!enabled) return "rotation OFF";
@@ -170,7 +186,7 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
         } catch {
           // if it cannot be created, the rotation still runs and reports the miss
         }
-        pending = { summaryPath, askedAt: at.getTime(), retried: false };
+        pending = { summaryPath, askedAt: at.getTime(), retried: false, brief: null };
         runtimeFlags.rotationPending = true;
         setStatus();
         pi.sendUserMessage(summaryRequest(summaryPath, sessionFile), { deliverAs: "followUp" });
@@ -247,7 +263,7 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
             case "status":
             default:
               cmdCtx.ui.notify(
-                `${statusLine()}\nSummaries and handoffs live in ${opts.agentDir} (handoff/). Same provider and model carry over: ${provider ?? "?"}/${model ?? "?"}.`,
+                `${statusLine()}\nSummaries and handoffs live in ${opts.agentDir} (handoff/). Same provider and model carry over: ${provider ?? "?"}/${model ?? "?"}.\nBrief in this session's system prompt: ${sessionBrief ? `${BRIEF_SENTENCES} sentences from the session it took over from` : "none"}.`,
                 "info",
               );
           }
@@ -272,6 +288,21 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
           if (live?.provider) provider = live.provider;
           if (live?.id) model = live.id;
 
+          // The brief: the replaced session's own closing reply when it was
+          // usable, and a digest of the handoff document when it was not. Either
+          // way the new session gets four sentences of orientation, not a cold
+          // start, and they are written to disk so the chain survives a restart.
+          const summary = summaryPath ? readSummary(summaryPath) : null;
+          const brief = pending?.brief ?? briefFromDocument(summary?.text);
+          let briefPath: string | null = null;
+          if (brief) {
+            try {
+              briefPath = writeBrief(opts.agentDir, brief, now());
+            } catch {
+              // A brief that cannot be written is still one this session carries.
+            }
+          }
+
           count = (readHandoff(handoffPath(opts.agentDir))?.count ?? 0) + 1;
           const handoff: RotationHandoff = {
             version: HANDOFF_VERSION,
@@ -284,6 +315,8 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
             provider,
             model,
             count,
+            brief,
+            briefPath,
             ...(note ? { note } : {}),
           };
           let handoffFilePath = "";
@@ -309,6 +342,7 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
           //     `setup`, so the next chat has the context even if its first turn
           //     never opens the file.
           if (provider && model) runtimeFlags.pendingModel = { provider, model };
+          runtimeFlags.pendingBrief = brief;
 
           const result = await cmdCtx.newSession({
             ...(sessionFile ? { parentSession: sessionFile } : {}),
@@ -321,7 +355,6 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
                 }
               }
               try {
-                const summary = summaryPath ? readSummary(summaryPath) : null;
                 const text = handoffContext(handoff, summary);
                 sm.appendMessage({
                   role: "user",
@@ -337,8 +370,8 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
             withSession: async (newCtx) => {
               newCtx.ui.notify(
                 summaryPath
-                  ? `Rotated: continuing in a new session as ${provider ?? "?"}/${model ?? "?"}. Handoff: ${summaryPath}${handoffFilePath ? ` (record: ${handoffFilePath})` : ""}`
-                  : `Rotated: continuing in a new session as ${provider ?? "?"}/${model ?? "?"} (no handoff document was written).`,
+                  ? `Rotated: continuing in a new session as ${provider ?? "?"}/${model ?? "?"}. Handoff: ${summaryPath}${handoffFilePath ? ` (record: ${handoffFilePath})` : ""}${brief ? ` — brief: ${briefPath ?? latestBriefPath(opts.agentDir)}` : " (no brief)"}`
+                  : `Rotated: continuing in a new session as ${provider ?? "?"}/${model ?? "?"} (no handoff document was written)${brief ? ` — carrying a ${BRIEF_SENTENCES}-sentence brief` : ""}.`,
                 "info",
               );
               await newCtx.sendUserMessage(handoffPrompt(handoff), { deliverAs: "followUp" });
@@ -352,6 +385,7 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
             cmdCtx.ui.notify("The new session was cancelled; continuing in this one.", "warning");
             runtimeFlags.rotationPending = false;
             runtimeFlags.pendingModel = null;
+            runtimeFlags.pendingBrief = null;
             deadline = now().getTime() + rotateMs;
             return;
           }
@@ -376,6 +410,13 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
         // record into the transcript, it does not change what the next request
         // is sent to. This handler runs before the replacement's kickoff
         // message, so the very first turn is already on the right model.
+        // And the brief the rotation wrote: this session's system prompt carries
+        // it for its whole life (see before_agent_start below). In-process when
+        // this *is* the replacement, from disk when the process restarted with a
+        // handoff still fresh.
+        sessionBrief = runtimeFlags.pendingBrief ?? freshBrief(opts.agentDir, now().getTime())?.brief ?? null;
+        runtimeFlags.pendingBrief = null;
+
         const handoffModel = runtimeFlags.pendingModel;
         runtimeFlags.pendingModel = null;
         if (handoffModel) {
@@ -399,6 +440,17 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
         if (enabled) start();
       });
 
+      // The brief rides in the system prompt: every request of this session is
+      // prefixed with four sentences of "here is where the work stands", so the
+      // session starts oriented and stays oriented as its context grows. It is
+      // added once per turn and never again (see BRIEF_MARKER), and it is framed
+      // as background rather than as an instruction.
+      pi.on("before_agent_start", (event) => {
+        if (!sessionBrief) return undefined;
+        if (event.systemPrompt.includes(BRIEF_MARKER)) return undefined;
+        return { systemPrompt: `${event.systemPrompt}\n\n${briefPromptBlock(sessionBrief)}` };
+      });
+
       pi.on("turn_start", () => {
         busy = true;
       });
@@ -411,17 +463,20 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
       pi.on("agent_settled", () => {
         busy = false;
       });
-      pi.on("agent_end", () => {
+      pi.on("agent_end", (event) => {
         busy = false;
         if (!pending) return;
         if (summaryReady(pending.summaryPath)) {
+          // The document is on disk: the turn that wrote it ends with the brief,
+          // and whatever it said is the brief the next session will run under.
+          pending.brief = deriveBrief(lastAssistantText(event));
           requestNewSession();
           return;
         }
         if (!pending.retried) {
           pending.retried = true;
           pi.sendUserMessage(
-            `The handoff document was not written yet. Write it now to exactly this path: ${pending.summaryPath} — then reply with one line: HANDOFF READY`,
+            `The handoff document was not written yet. Write it now to exactly this path: ${pending.summaryPath} — then reply with exactly ${BRIEF_SENTENCES} sentences summarising this session for the next chat.`,
             { deliverAs: "followUp" },
           );
         } else {
@@ -437,6 +492,16 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
       });
     },
   };
+}
+
+/** The last assistant message's text — where the agent's closing brief lands. */
+function lastAssistantText(event: { messages: readonly unknown[] }): string | null {
+  const last = event?.messages?.[event.messages.length - 1] as { role?: string; content?: unknown } | undefined;
+  if (!last || last.role !== "assistant" || !Array.isArray(last.content)) return null;
+  return (last.content as Array<{ type?: string; text?: unknown }>)
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("\n");
 }
 
 /** One line telling the user the session rotates, and when. */
