@@ -37,6 +37,7 @@ import {
   SwarmError,
   swarmDir,
 } from "./store";
+import { addFinding, listFindings, nextFindingAction, setFindingStatus, statusLine } from "./ledger";
 import { spawnWorker, stopWorker } from "./workers";
 
 export const SWARM_TOOL_NAME = "free_pi_swarm";
@@ -50,6 +51,7 @@ const Action = Type.Union(
     Type.Literal("spawn"),
     Type.Literal("stop"),
     Type.Literal("task"),
+    Type.Literal("finding"),
     Type.Literal("claim"),
     Type.Literal("release"),
     Type.Literal("send"),
@@ -60,7 +62,9 @@ const Action = Type.Union(
     description:
       "status: roster + board + claims + unread mail. enable/disable: the deployment switch. " +
       "plan: put several tasks on the board at once. spawn: deploy a worker session. stop: end one or all workers. " +
-      "task: add/claim/done/fail/block/reopen/list. claim/release: exclusive rights to a scope. " +
+      "task: add/claim/done/fail/block/reopen/list. " +
+      "finding: the ledger — add/list/next/status, where a row moves lead → testing → poc → proven | dead | duplicate and each move needs its evidence. " +
+      "claim/release: exclusive rights to a scope. " +
       "send: message a teammate (or everyone). inbox: read your own mail. report: broadcast a finding.",
   },
 );
@@ -99,10 +103,29 @@ const PARAMS = Type.Object({
         Type.Literal("fail"),
         Type.Literal("block"),
         Type.Literal("reopen"),
+        Type.Literal("next"),
+        Type.Literal("status"),
       ],
-      { description: "For task: what to do with it." },
+      { description: 'For task/finding: what to do with it. For finding, "next" returns the single next action.' },
     ),
   ),
+  findingId: Type.Optional(Type.String({ description: 'For finding status/next: the row, e.g. "F-3".' })),
+  status: Type.Optional(
+    Type.String({ description: "For finding: lead | testing | poc | proven | dead | duplicate." }),
+  ),
+  severity: Type.Optional(Type.String({ description: "For finding: critical | high | medium | low | unknown." })),
+  location: Type.Optional(Type.String({ description: 'For finding: where it lives, e.g. "src/Vault.sol:142".' })),
+  invariant: Type.Optional(
+    Type.String({ description: "For finding: the invariant you believe is broken (required to move a lead to testing)." }),
+  ),
+  impact: Type.Optional(
+    Type.String({ description: "For finding: one sentence — which asset, and what an attacker gains (required for proven)." }),
+  ),
+  killed: Type.Optional(
+    Type.String({ description: "For finding: why it is not exploitable (required for dead) — this is what stops it being re-tested." }),
+  ),
+  duplicateOf: Type.Optional(Type.String({ description: "For finding: the prior report/issue it matches (required for duplicate)." })),
+  target: Type.Optional(Type.String({ description: "For finding: the program/target these rows belong to." })),
   id: Type.Optional(Type.String({ description: "The task id, for task/claim." })),
   title: Type.Optional(Type.String({ description: "For task add: the task's one-line title." })),
   detail: Type.Optional(Type.String({ description: "For task add: what the task actually involves." })),
@@ -407,6 +430,90 @@ export async function runSwarmAction(
       };
     }
 
+    case "finding": {
+      const op = (params.op ?? (params.findingId ? "status" : "list")) as string;
+      if (op === "add") {
+        const title = params.title?.trim();
+        if (!title) throw new SwarmError("finding add needs a title: one line saying what is wrong");
+        const finding = addFinding(
+          {
+            title,
+            by: me,
+            target: params.target,
+            severity: params.severity,
+            location: params.location,
+            invariant: params.invariant,
+            impact: params.impact,
+            evidence: params.evidence,
+            status: params.status,
+          },
+          env,
+        );
+        return {
+          text: `${finding.id} is on the ledger as ${finding.status} (${finding.severity}): ${finding.title}. ${
+            finding.status === "lead"
+              ? "A lead is a hunch: move it to testing by naming the invariant you believe is broken, then attack that until you have a reproduction or a reason it holds."
+              : "Keep the row current — the next action is chosen from it (action:\"finding\", op:\"next\")."
+          }`,
+          details: { ok: true, action: params.action, summary: `${finding.id} ${finding.status}`, info: { finding: finding as unknown as Record<string, unknown> } },
+        };
+      }
+      if (op === "list" || op === "ledger") {
+        const findings = listFindings(env);
+        if (findings.length === 0) {
+          return { text: "the ledger is empty — recon the target, then record each hypothesis before chasing it.", details: { ok: true, action: params.action, summary: "empty ledger" } };
+        }
+        return {
+          text: bullets([
+            `${findings.length} finding(s): ${statusLine(findings)}`,
+            ...findings.map(
+              (f) =>
+                `${f.id} ${f.status} (${f.severity}) ${f.title}${f.location ? ` [${f.location}]` : ""}${f.evidence ? ` — evidence: ${f.evidence}` : ""}${f.killed ? ` — killed: ${f.killed}` : ""}`,
+            ),
+          ]),
+          details: { ok: true, action: params.action, summary: `${findings.length} finding(s)` },
+        };
+      }
+      if (op === "next") {
+        const step = nextFindingAction(listFindings(env), { target: params.target });
+        return {
+          text: step.action,
+          details: { ok: true, action: params.action, summary: step.reason, info: step.finding ? { finding: step.finding as unknown as Record<string, unknown> } : {} },
+        };
+      }
+      const id = params.findingId?.trim();
+      if (!id) throw new SwarmError('finding needs an id for this op (params.findingId, e.g. "F-1")');
+      const status = params.status?.trim();
+      if (!status) throw new SwarmError(`finding ${id}: give the state you are moving it to (params.status: lead|testing|poc|proven|dead|duplicate)`);
+      const finding = setFindingStatus(
+        {
+          id,
+          status,
+          by: me,
+          title: params.title,
+          target: params.target,
+          severity: params.severity,
+          location: params.location,
+          invariant: params.invariant,
+          impact: params.impact,
+          evidence: params.evidence,
+          killed: params.killed,
+          duplicateOf: params.duplicateOf,
+        },
+        env,
+      );
+      const note =
+        finding.status === "proven"
+          ? " Proven means a verifier can reproduce it and you can say which asset is at risk — write it up now."
+          : finding.status === "dead"
+            ? " Recorded dead with the reason, which is what stops the next session (or the next rotation) paying for this hypothesis twice."
+            : "";
+      return {
+        text: `${finding.id} is ${finding.status} (${finding.severity}): ${finding.title}.${note}`,
+        details: { ok: true, action: params.action, summary: `${finding.id} ${finding.status}`, info: { finding: finding as unknown as Record<string, unknown> } },
+      };
+    }
+
     case "report": {
       const body = params.body?.trim();
       if (!body) throw new SwarmError("report needs a body: what did you find, and how do we reproduce it?");
@@ -448,6 +555,9 @@ export function createSwarmTool(deps: SwarmToolDeps) {
       "Never deploy a worker without a task on the board, and never work a scope another session holds — check free_pi_swarm status first.",
       "Every deployed worker is a separate free-pi session spending its own allowance; prefer doing the work yourself over deploying a crew.",
       "Findings belong on the bus (free_pi_swarm report) as they are found, and a finding is verified by a different session before it is written up.",
+      'Every hypothesis belongs on the ledger (action:"finding", op:"add") before you chase it, and it only moves forward with evidence: testing needs the invariant, poc needs a reproduction, proven needs an impact sentence, dead needs the reason it cannot be exploited.',
+      'Start a work cycle with action:"finding", op:"next" — it hands you the single most valuable row (proven → poc → an unfinished test → a new lead) and refuses new leads while too many are already open.',
+      "A dead row is a result, not a failure: record it with its reason so neither you nor the next session re-tests it.",
     ],
     parameters: PARAMS,
     async execute(_toolCallId: string, params: SwarmToolParams, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: ExtensionContext) {

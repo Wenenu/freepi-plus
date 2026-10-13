@@ -67,6 +67,44 @@ free-pi-cli swarm inbox                  read your own mail
 free-pi-cli swarm stop --all
 ```
 
+## The findings ledger
+
+The one thing an agent hunting bugs loses most of its allowance to is not
+hunting: re-deriving a fact it already established, and carrying a dozen
+half-tested suspicions that never become a report. The ledger is the smallest
+structure that stops both. One file per hypothesis under
+`~/.free-pi/swarm/findings/`, shared by every session on the target:
+
+```
+lead → testing → poc → proven | dead | duplicate
+```
+
+and it will not let a row move without the evidence that makes it worth
+something — `testing` needs the invariant being attacked, `poc` needs a
+reproduction, `proven` needs one sentence of impact (which asset, what the
+attacker gets), `dead` needs the reason it cannot be exploited, `duplicate` needs
+the prior report. A `proven` row cannot be edited back into a guess, and a dead
+row is a result: it is what stops the next session, or the next rotation, paying
+for the same idea twice.
+
+```
+free-pi-cli swarm finding add --title "liquidation threshold mixes 1e8 and 1e18" \
+                              --target twyne --severity high --location src/twyne/EulerCollateralVault.sol:142
+free-pi-cli swarm finding status F-1 testing --invariant "debt ≤ collateral value × liquidation LTV"
+free-pi-cli swarm finding status F-1 poc --evidence test/twyne/LiqThreshold.t.sol
+free-pi-cli swarm finding status F-1 dead --killed "the guard reverts before the branch"
+free-pi-cli swarm finding next           the single next thing to do
+free-pi-cli swarm finding list           every row, with the evidence each state required
+```
+
+The agent does the same thing in-session with the `free_pi_swarm` tool
+(`action: "finding"`). The **digest** — counts, the next action, what is in
+flight, and the dead ids — rides in every session's system prompt (skipped
+entirely on an empty ledger), so a teammate's kill reaches you without anyone
+asking. `op: "next"` ranks work by money rather than curiosity (proven → poc →
+an unfinished test → a new lead) and, past two open rows, refuses new leads and
+names the rows to close instead.
+
 How the coordination actually works:
 
 - **Scopes are exclusive.** A host, URL prefix, repo+dir or binary is claimed by
@@ -162,6 +200,7 @@ Watch it with `free-pi-cli swarm status` and stop it with `swarm stop --all`.
 | `src/swarm/extension.ts` | `/coordinate` and `/swarm`, and the mail watcher inside a session |
 | `src/swarm/tool.ts` | the `free_pi_swarm` tool the coordinating agent calls |
 | `src/swarm/roles.ts` | the role briefs (recon, hunter, verifier, scribe) and the coordinator's own brief |
+| `src/swarm/ledger.ts` | the findings ledger: the states, the evidence each move requires, the next-action ranking, the system-prompt digest |
 | `src/keepalive.ts` | an idle session is told to continue (/keepalive) |
 | `src/rotate.ts` | the 3-hour shift: handoff summary, then a new session on the same provider and model (/rotate) |
 | `src/handoff.ts` | the handoff record, its summary path, and the first message of the new session |

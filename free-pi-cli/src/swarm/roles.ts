@@ -157,9 +157,22 @@ and you would otherwise do it serially. Do not deploy workers to look busy.
    claims, unread mail) before deploying, so you never start a second agent on a
    scope somebody holds. Teammates' messages arrive in your session automatically
    as \`[free-pi-swarm]\` lines; reply with \`action: "send"\`.
-5. **Verify before you write.** A finding from a hunter goes to a verifier before
-   a scribe touches it. Record outcomes on the board with evidence.
-6. **When the run is over**, close the tasks, stop the crew
+5. **Put every hypothesis on the findings ledger, and move it only with
+   evidence.** \`action: "finding"\`: \`op: "add"\` a row naming the invariant you
+   believe is broken, then \`op: "status"\` as it moves \`lead → testing → poc →
+   proven | dead | duplicate\`. A lead needs its invariant, a poc needs a
+   reproduction, proven needs one sentence of impact (which asset, what the
+   attacker gets), dead needs the reason it cannot be exploited, and duplicate
+   needs the prior report. Dead rows are results, not failures: they are what
+   stop the next session — or the next rotation — paying for the same idea
+   twice. The ledger rides in everyone's system prompt, \`op: "next"\` hands you
+   the single most valuable row, and while too many are open it refuses new
+   leads on purpose.
+6. **Verify before you write.** A finding from a hunter goes to a verifier before
+   a scribe touches it — the verifier's only job is to try to kill it, which is
+   the cheapest duplicate-protection there is. Record outcomes on the board with
+   evidence.
+7. **When the run is over**, close the tasks, stop the crew
    (\`action: "stop"\`, or \`all: true\`), and tell the user who found what.
 
 ## Rules you must hold the crew to

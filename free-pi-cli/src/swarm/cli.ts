@@ -9,6 +9,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  addFinding,
+  getFinding,
+  listFindings,
+  nextFindingAction,
+  renderLedgerDigest,
+  setFindingStatus,
+  statusLine,
+} from "./ledger";
+import {
   MAIL_KINDS,
   type MailKind,
   addTask,
@@ -59,6 +68,13 @@ free-pi-cli swarm — coordinate several free-pi sessions on one target (bug bou
   swarm task add --title "…" [--id ID] [--scope S] [--role R] [--detail "…"]
   swarm task claim ID                take it (exactly one owner; exit 4 if someone holds it)
   swarm task done ID [--evidence "…"] | fail ID [--result "…"] | block ID [--result "…"]
+
+  swarm finding add --title "…" [--target T] [--severity S] [--location "path:line"] [--invariant "…"]
+                                     the ledger: what you suspect, and the invariant you believe is broken
+  swarm finding list [--json]        every row, with the evidence each state required
+  swarm finding status ID STATE [--evidence "…"] [--impact "…"] [--invariant "…"] [--killed "…"]
+                                     lead | testing | poc | proven | dead | duplicate — the evidence is required
+  swarm finding next                 the single next thing to do, chosen so money comes before curiosity
 
   swarm claim SCOPE [--ttl MIN]      exclusive rights to a host/URL/repo — one tester per target
   swarm release SCOPE                hand it back
@@ -353,6 +369,96 @@ export async function runSwarmCli(argv: readonly string[], opts: SwarmCliOptions
           return 0;
         }
         throw new SwarmError(`unknown task action "${sub}"`);
+      }
+
+      case "finding": {
+        const sub = args.rest[0] ?? "list";
+        if (sub === "add") {
+          const title = strFlag(args, "title") ?? args.rest.slice(1).join(" ");
+          if (!title) throw new SwarmError("need --title");
+          const finding = addFinding(
+            {
+              id: strFlag(args, "id"),
+              title,
+              by: me,
+              target: strFlag(args, "target"),
+              severity: strFlag(args, "severity"),
+              location: strFlag(args, "location"),
+              invariant: strFlag(args, "invariant"),
+              impact: strFlag(args, "impact"),
+              evidence: strFlag(args, "evidence"),
+              status: strFlag(args, "status"),
+            },
+            env,
+          );
+          print({ ok: true, finding }, `${finding.id} ${finding.status} (${finding.severity}) ${finding.title}`);
+          return 0;
+        }
+        if (sub === "list" || sub === "ledger") {
+          const findings = listFindings(env);
+          const target = strFlag(args, "target");
+          const rows = target ? findings.filter((f) => f.target === target) : findings;
+          if (json) print({ findings: rows });
+          else if (rows.length === 0) io.out("the ledger is empty — nothing has been tested yet");
+          else {
+            io.out(`${rows.length} finding(s): ${statusLine(rows)}`);
+            for (const f of rows) {
+              io.out(`${f.id.padEnd(6)} ${f.status.padEnd(9)} ${f.severity.padEnd(8)} ${f.title}${f.location ? `  [${f.location}]` : ""}`);
+              if (f.evidence) io.out(`       evidence: ${f.evidence}`);
+              if (f.impact) io.out(`       impact:   ${f.impact}`);
+              if (f.killed) io.out(`       killed:   ${f.killed}`);
+              if (f.duplicateOf) io.out(`       dup of:   ${f.duplicateOf}`);
+            }
+          }
+          return 0;
+        }
+        if (sub === "digest") {
+          const text = renderLedgerDigest(listFindings(env), { target: strFlag(args, "target") });
+          io.out(text === "" ? "the ledger is empty" : text);
+          return 0;
+        }
+        if (sub === "next" || sub === "todo") {
+          const step = nextFindingAction(listFindings(env), { target: strFlag(args, "target") });
+          print({ ok: true, next: step.finding, reason: step.reason, action: step.action }, step.action);
+          return 0;
+        }
+        const id = args.rest[1] ?? strFlag(args, "id");
+        if (sub === "show") {
+          if (!id) throw new SwarmError("need a finding id: swarm finding show <id>");
+          const finding = getFinding(id, env);
+          if (!finding) throw new SwarmError(`no finding ${id} in the ledger`, 3);
+          print({ ok: true, finding }, JSON.stringify(finding, null, 2));
+          return 0;
+        }
+        if (sub === "status") {
+          const status = args.rest[2] ?? strFlag(args, "status");
+          if (!id || !status) {
+            throw new SwarmError('usage: swarm finding status ID lead|testing|poc|proven|dead|duplicate [--evidence "…"]');
+          }
+          const finding = setFindingStatus(
+            {
+              id,
+              status,
+              by: me,
+              evidence: strFlag(args, "evidence"),
+              impact: strFlag(args, "impact"),
+              invariant: strFlag(args, "invariant"),
+              killed: strFlag(args, "killed"),
+              duplicateOf: strFlag(args, "duplicate-of"),
+              severity: strFlag(args, "severity"),
+              title: strFlag(args, "title"),
+              location: strFlag(args, "location"),
+              target: strFlag(args, "target"),
+            },
+            env,
+          );
+          print(
+            { ok: true, finding },
+            `${finding.id} is ${finding.status} (${finding.severity}) ${finding.title}`,
+          );
+          return 0;
+        }
+        throw new SwarmError(`unknown finding action "${sub}" (add, list, show, status, next, digest)`);
       }
 
       case "claim": {

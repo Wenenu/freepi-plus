@@ -598,3 +598,130 @@ describe("swarm — CLI parsing and help", () => {
     expect(listTasks(env)).toHaveLength(0);
   });
 });
+
+describe("swarm finding — the ledger through the CLI", () => {
+  test("a hypothesis goes on the ledger, and every move demands its evidence", async () => {
+    const added = await cli([
+      "finding", "add",
+      "--title", "liquidation threshold mixes 1e8 and 1e18 units",
+      "--target", "twyne",
+      "--severity", "high",
+      "--location", "src/twyne/EulerCollateralVault.sol:142",
+    ]);
+    expect(added.code).toBe(0);
+    expect(added.out).toContain("F-1 lead (high)");
+
+    // A lead is a hunch until it names the invariant it attacks.
+    const noInvariant = await cli(["finding", "status", "F-1", "testing"]);
+    expect(noInvariant.code).toBe(5);
+    expect(noInvariant.err).toContain("invariant");
+
+    const testing = await cli([
+      "finding", "status", "F-1", "testing",
+      "--invariant", "debt ≤ collateral value × liquidation LTV",
+    ]);
+    expect(testing.code).toBe(0);
+    expect(testing.out).toContain("F-1 is testing");
+
+    // ...and a PoC needs something a verifier can run.
+    const noEvidence = await cli(["finding", "status", "F-1", "poc"]);
+    expect(noEvidence.code).toBe(5);
+    expect(noEvidence.err).toContain("evidence");
+
+    const poc = await cli(["finding", "status", "F-1", "poc", "--evidence", "test/twyne/LiqThreshold.t.sol"]);
+    expect(poc.code).toBe(0);
+
+    const list = await cli(["finding", "list", "--json"]);
+    const parsed = JSON.parse(list.out) as { findings: Array<{ id: string; status: string; evidence: string }> };
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0]).toMatchObject({ id: "F-1", status: "poc", evidence: "test/twyne/LiqThreshold.t.sol" });
+
+    // The next action is the PoC: one step from a submission, so it wins.
+    const next = await cli(["finding", "next"]);
+    expect(next.out).toContain("F-1 has a PoC");
+    expect(next.out).toContain("test/twyne/LiqThreshold.t.sol");
+  });
+
+  test("a killed hypothesis is recorded with its reason and stops being offered", async () => {
+    await cli(["finding", "add", "--title", "reentrancy in withdraw", "--target", "twyne"]);
+    await cli(["finding", "add", "--title", "rounding in previewRedeem", "--target", "twyne"]);
+    const dead = await cli([
+      "finding", "status", "F-1", "dead",
+      "--killed", "the entrypoint is nonReentrant and the call is to a trusted token",
+    ]);
+    expect(dead.code).toBe(0);
+    expect(dead.out).toContain("F-1 is dead");
+
+    const digest = await cli(["finding", "digest"]);
+    expect(digest.out).toContain("DEAD (do not re-test)");
+    expect(digest.out).toContain("reentrancy in withdraw");
+
+    // The dead row is never the answer to "what next".
+    const next = await cli(["finding", "next"]);
+    expect(next.out).toContain("F-2");
+    expect(next.out).toContain("name the invariant");
+
+    // And an unrecorded reason is refused, because that is the thing that costs
+    // the next session an hour.
+    await cli(["finding", "add", "--title", "third idea", "--target", "twyne"]);
+    const noReason = await cli(["finding", "status", "F-3", "dead"]);
+    expect(noReason.code).toBe(5);
+    expect(noReason.err).toContain("killed");
+  });
+});
+
+describe("free_pi_swarm — the finding action the agent uses", () => {
+  test("the agent records, advances and is told what to do next, in-session", async () => {
+    const added = await runSwarmAction(
+      { action: "finding", op: "add", title: "oracle price can be stale by one block", target: "twyne", severity: "high" },
+      toolDeps(),
+    );
+    expect(added.details.ok).toBe(true);
+    expect(added.text).toContain("F-1 is on the ledger as lead");
+
+    // The evidence rules are the same ones the CLI enforces — no second path.
+    await expect(
+      runSwarmAction({ action: "finding", op: "status", findingId: "F-1", status: "testing" }, toolDeps()),
+    ).rejects.toThrow(/invariant/);
+    await expect(
+      runSwarmAction({ action: "finding", op: "status", findingId: "F-1", status: "poc" }, toolDeps()),
+    ).rejects.toThrow(/not a step/); // lead → poc skips the hypothesis step
+    await expect(
+      runSwarmAction(
+        {
+          action: "finding",
+          op: "status",
+          findingId: "F-1",
+          status: "testing",
+          invariant: "bounds are checked before the subtraction",
+        },
+        toolDeps(),
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      runSwarmAction({ action: "finding", op: "status", findingId: "F-1", status: "proven" }, toolDeps()),
+    ).rejects.toThrow(/evidence/);
+
+    const moved = await runSwarmAction(
+      {
+        action: "finding",
+        op: "status",
+        findingId: "F-1",
+        status: "proven",
+        invariant: "the oracle answer used for liquidation is never older than the last block",
+        evidence: "test/twyne/StaleOracle.t.sol",
+        impact: "a liquidation can be priced off a stale answer and the borrower is closed out at the wrong value",
+      },
+      toolDeps(),
+    );
+    expect(moved.details.ok).toBe(true);
+    expect(moved.text).toContain("F-1 is proven");
+    expect(moved.text).toContain("write it up now");
+
+    const next = await runSwarmAction({ action: "finding", op: "next" }, toolDeps());
+    expect(next.text).toContain("write the submission");
+
+    const list = await runSwarmAction({ action: "finding", op: "list" }, toolDeps());
+    expect(list.text).toContain("1 proven");
+  });
+});

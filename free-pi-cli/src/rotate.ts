@@ -43,6 +43,7 @@ import {
   writeHandoff as writeHandoffFile,
 } from "./handoff";
 import { applyModelSwitch } from "./model-switch";
+import { briefFromLedger, listFindings, singleTarget } from "./swarm/ledger";
 import { runtimeFlags } from "./runtime-flags";
 
 export const ROTATE_EXTENSION_NAME = "free-pi-rotate";
@@ -293,7 +294,14 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
           // way the new session gets four sentences of orientation, not a cold
           // start, and they are written to disk so the chain survives a restart.
           const summary = summaryPath ? readSummary(summaryPath) : null;
-          const brief = pending?.brief ?? briefFromDocument(summary?.text);
+          // The model's own closing reply first, then the findings ledger (which
+          // is machine-accurate: counts, the next action, and what is dead), and
+          // only then a digest of the document.
+          const findings = listFindings(env);
+          const brief =
+            pending?.brief ??
+            briefFromLedger(findings, { target: env.FREEPI_SWARM_TARGET?.trim() || singleTarget(findings) }) ??
+            briefFromDocument(summary?.text);
           let briefPath: string | null = null;
           if (brief) {
             try {

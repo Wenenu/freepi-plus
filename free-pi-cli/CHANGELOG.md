@@ -57,6 +57,28 @@ build); this file is the fuller human record.
   model.
 
 ### Added
+- **The findings ledger: `lead → testing → poc → proven | dead | duplicate`.**
+  A bug-bounty run now has one file per hypothesis under
+  `~/.free-pi/swarm/findings/`, shared by every session, and it will not let a row
+  move without the evidence that makes it worth anything: `testing` needs the
+  invariant being attacked, `poc` needs a reproduction a verifier can run,
+  `proven` needs one sentence of impact (which asset, what the attacker gets),
+  `dead` needs the reason it cannot be exploited, `duplicate` needs the prior
+  report. A `proven` row can never be edited back into a guess.
+- **It is in the session's system prompt, and it says what to do next.** A
+  compact digest — counts, the single next action, what is in flight, and the ids
+  that are dead and must not be re-tested — is re-read every turn, so a
+  teammate's kill reaches you without anyone asking. It is skipped entirely on an
+  empty ledger, so a session that is not hunting pays nothing for it.
+  `action:"finding"` `op:"next"` ranks the work by money rather than curiosity
+  (proven → poc → an unfinished test → a new lead) and, past two open rows,
+  refuses new leads and names the ones to close instead: a session with six live
+  hypotheses finishes none.
+- The same ledger from a shell: `free-pi-cli swarm finding add|list|show|status|next|digest`.
+  The CLI is what a worker (or its bash) uses, and it enforces exactly the same
+  rules as the tool — there is no second path into the state.
+- A rotation with no usable closing reply now falls back to the ledger for its
+  four-sentence brief: counts, what is proven, the next action, and what is dead.
 - **The next chat starts briefed.** A rotation no longer only leaves a document: the
   session that is ending is asked to close with **exactly four sentences** — where
   the work stands, what it was doing, what is next, what must not be repeated — and

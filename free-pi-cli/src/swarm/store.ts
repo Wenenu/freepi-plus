@@ -18,6 +18,8 @@
 //   mail/<name>/new/   the bus: one JSON file per message; reading moves it to read/
 //   tasks/<id>.json    the board, with the history of who claimed what
 //   tasks/<id>.claim/  a directory: mkdir is the atomic "exactly one owner" test
+//   findings/<id>.json the ledger: lead → testing → poc → proven | dead | duplicate,
+//                      with the evidence each move requires (see ledger.ts)
 //   claims/<key>/      an exclusive scope claim (a host, URL, repo or path)
 //   slots/<n>.json     the worker cap, enforced with O_EXCL so no daemon owns a counter
 //
@@ -84,6 +86,7 @@ export function swarmPaths(env: NodeJS.ProcessEnv = process.env) {
     agents: join(dir, "agents"),
     mail: join(dir, "mail"),
     tasks: join(dir, "tasks"),
+    findings: join(dir, "findings"),
     claims: join(dir, "claims"),
     slots: join(dir, "slots"),
     stop: join(dir, "stop"),
@@ -94,18 +97,20 @@ export function swarmPaths(env: NodeJS.ProcessEnv = process.env) {
 
 export function ensureSwarmDir(env: NodeJS.ProcessEnv = process.env): void {
   const p = swarmPaths(env);
-  for (const dir of [p.dir, p.agents, p.mail, p.tasks, p.claims, p.slots, p.stop, p.logs]) {
+  for (const dir of [p.dir, p.agents, p.mail, p.tasks, p.findings, p.claims, p.slots, p.stop, p.logs]) {
     mkdirSync(dir, { recursive: true });
   }
 }
 
-function writeJsonAtomic(path: string, value: unknown): void {
+// Exported for the findings ledger (swarm/ledger.ts), which keeps its own files
+// in the same directory and must write them the same way.
+export function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, path);
 }
 
-function readJson<T>(path: string): T | null {
+export function readJson<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch {
@@ -817,6 +822,9 @@ export const SWARM_BUS_HELP = [
   "  free-pi-cli swarm claim <scope>          exclusive claim on a target",
   "  free-pi-cli swarm release <scope>        hand it back when you are done",
   '  free-pi-cli swarm task done <id> --evidence "what you proved"',
+  '  free-pi-cli swarm finding add --title "…" --invariant "what it breaks"   put a hypothesis on the ledger',
+  '  free-pi-cli swarm finding status <id> poc --evidence "test/x.t.sol"        every state needs its evidence',
+  '  free-pi-cli swarm finding next                                            the one thing to do next',
 ].join("\n");
 
 export function buildWorkerBrief(input: {

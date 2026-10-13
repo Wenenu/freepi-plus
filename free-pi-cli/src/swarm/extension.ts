@@ -14,7 +14,9 @@
 //   * mail addressed to this session is pushed into it as a user message, so a
 //     teammate's finding arrives without anyone polling;
 //   * `free_pi_swarm` is how the model deploys the next worker — only when the
-//     work is independent, never as a reflex.
+//     work is independent, never as a reflex;
+//   * the findings ledger rides in the system prompt, so the session always knows
+//     what is proven, what to do next and what is already recorded dead.
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { coordinatorBrief } from "./roles";
 import {
@@ -34,6 +36,7 @@ import {
   swarmDir,
   SwarmError,
 } from "./store";
+import { LEDGER_MARKER, listFindings, renderLedgerDigest, statusLine } from "./ledger";
 import { createSwarmTool } from "./tool";
 import { crewSummary, spawnWorker, stopWorker } from "./workers";
 
@@ -111,6 +114,8 @@ export function createSwarmExtension(opts: CreateSwarmExtensionOptions = {}): In
       let sessionFile: string | null = null;
       let watcher: ReturnType<typeof setInterval> | undefined;
       const deps = { env, self: () => selfName, cwd: () => cwd };
+      /** Which target's rows the digest shows; unset means every row on file. */
+      let ledgerTarget: string | undefined = env.FREEPI_SWARM_TARGET?.trim() || undefined;
 
       pi.registerTool(createSwarmTool(deps));
 
@@ -174,7 +179,12 @@ export function createSwarmExtension(opts: CreateSwarmExtensionOptions = {}): In
           cwd = ctx.cwd ?? cwd;
           const raw = (args ?? "").trim();
           const withCrew = /(^|\s)--?crew(\s|$)/i.test(raw);
-          const goal = raw.replace(/(^|\s)--?crew(\s|$)/i, " ").trim();
+          const targetFlag = /(^|\s)--?target\s+(\S+)/i.exec(raw);
+          if (targetFlag?.[2]) ledgerTarget = targetFlag[2];
+          const goal = raw
+            .replace(/(^|\s)--?crew(\s|$)/i, " ")
+            .replace(/(^|\s)--?target\s+\S+/i, " ")
+            .trim();
 
           const before = loadSwarmConfig(env);
           saveSwarmConfig({ enabled: true }, env);
@@ -189,6 +199,12 @@ export function createSwarmExtension(opts: CreateSwarmExtensionOptions = {}): In
               : `Coordinating. I turned the swarm switch ON (max ${cfg.maxWorkers} workers) — each worker is a separate free-pi session with its own free allowance, so the limit is what keeps this affordable.`,
           );
           notes.push(`You are "${selfName}" on the roster. State lives in ${swarmDir(env)}.`);
+          const ledger = listFindings(env);
+          notes.push(
+            ledger.length === 0
+              ? "The findings ledger is empty. Every hypothesis goes on it (free_pi_swarm action:\"finding\") before you chase it — lead → testing → poc → proven | dead | duplicate, and each move needs its evidence."
+              : `The findings ledger already has ${ledger.length} row(s): ${statusLine(ledger)}. It is in your system prompt, and action:"finding", op:"next" hands you the single most valuable one.`,
+          );
 
           if (withCrew) {
             try {
@@ -292,6 +308,22 @@ export function createSwarmExtension(opts: CreateSwarmExtensionOptions = {}): In
             ctx.ui.notify(`/swarm ${sub ?? ""}: ${e.message}`, "error");
           }
         },
+      });
+
+      // ---- the findings ledger in the system prompt -------------------------
+      //
+      // The cheapest thing this whole subsystem can do for a bug-bounty run is
+      // stop it re-testing a hypothesis that is already recorded dead. The digest
+      // is a handful of lines — what is proven, the one next action, what is in
+      // flight, and which ids must not be re-opened — re-read every turn so a
+      // teammate's update (or a worker's kill) lands in the prompt instead of
+      // waiting for someone to ask. It is skipped entirely on an empty ledger, so
+      // a session that is not hunting pays nothing for it.
+      pi.on("before_agent_start", (event) => {
+        const digest = renderLedgerDigest(listFindings(env), { target: ledgerTarget });
+        if (digest === "") return undefined;
+        if (event.systemPrompt.includes(LEDGER_MARKER)) return undefined;
+        return { systemPrompt: `${event.systemPrompt}\n\n${digest}` };
       });
 
       // ---- session lifecycle ------------------------------------------------

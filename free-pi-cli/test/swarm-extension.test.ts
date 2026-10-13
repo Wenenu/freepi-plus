@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { createSwarmExtension } from "../src/swarm/extension";
+import { LEDGER_MARKER, addFinding } from "../src/swarm/ledger";
 import { countUnread, getAgent, listAgents, loadSwarmConfig, sendMail, swarmPaths } from "../src/swarm/store";
 import type { SpawnRequest, SpawnResult } from "../src/swarm/workers";
 
@@ -337,5 +338,42 @@ describe("swarm extension — lifecycle", () => {
     await h.commands.get("coordinate")?.("", context(h));
     expect(swarmPaths(env).dir).toBe(dir);
     expect(getAgent("coordinator", env)).not.toBeNull();
+  });
+});
+
+describe("the findings ledger rides in the system prompt", () => {
+  test("an active ledger is injected once per turn, and an empty one changes nothing", async () => {
+    const h = mount();
+    const before = h.events.get("before_agent_start");
+    expect(before).toBeDefined();
+    const base = { type: "before_agent_start", systemPrompt: "BASE PROMPT" };
+
+    // Nothing recorded yet: a session that is not hunting pays nothing.
+    expect(before?.(base, context(h))).toBeUndefined();
+
+    addFinding({ title: "share math rounds in the borrower's favour", by: "tester", target: "twyne", severity: "high" }, env);
+    const injected = before?.(base, context(h)) as { systemPrompt?: string } | undefined;
+    expect(injected?.systemPrompt).toContain("BASE PROMPT");
+    expect(injected?.systemPrompt).toContain(LEDGER_MARKER);
+    expect(injected?.systemPrompt).toContain("share math rounds in the borrower's favour");
+
+    // The prompt already carries it: not added a second time.
+    expect(before?.({ ...base, systemPrompt: injected?.systemPrompt ?? "" }, context(h))).toBeUndefined();
+  });
+
+  test("/coordinate reports the ledger, and --target scopes it to this program", async () => {
+    const h = mount();
+    addFinding({ title: "kelp row", by: "tester", target: "kelp" }, env);
+    addFinding({ title: "twyne row", by: "tester", target: "twyne" }, env);
+
+    await h.commands.get("coordinate")?.("--target twyne audit the delegation math", context(h));
+    expect(h.notices.join("\n")).toContain("findings ledger already has 2 row(s)");
+
+    const injected = h.events.get("before_agent_start")?.(
+      { type: "before_agent_start", systemPrompt: "BASE PROMPT" },
+      context(h),
+    ) as { systemPrompt?: string } | undefined;
+    expect(injected?.systemPrompt).toContain("twyne row");
+    expect(injected?.systemPrompt).not.toContain("kelp row");
   });
 });
