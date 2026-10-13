@@ -126,6 +126,40 @@ describe("keepalive — an idle session is told to continue", () => {
     expect(h.sends.length).toBeGreaterThan(0);
   });
 
+  // The backup for a turn that ended on a tool call the model printed instead of
+  // making (DeepSeek's DSML wrapper). That turn did not do the work it meant to
+  // do, and nothing follows it — so it is nudged at the next check rather than
+  // after the whole idle window, which for a long unattended run is the window
+  // that matters.
+  test("a turn that ended on printed tool markup is nudged on the next check", async () => {
+    const h = mount({ idleMs: 600_000 });
+    await started(h);
+    await sleep(20);
+    expect(h.sends).toHaveLength(0);
+
+    h.events.get("agent_end")?.(
+      { messages: [{ role: "assistant", content: [{ type: "text", text: '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">' }] }] },
+      h.ctx,
+    );
+    await sleep(40);
+
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]?.text).toBe(KEEPALIVE_NUDGE);
+    h.events.get("session_shutdown")?.({}, h.ctx);
+  });
+
+  test("an ordinary finished turn still waits out the idle window", async () => {
+    const h = mount({ idleMs: 600_000 });
+    await started(h);
+    h.events.get("agent_end")?.(
+      { messages: [{ role: "assistant", content: [{ type: "text", text: "The report is written; next is the PoC." }] }] },
+      h.ctx,
+    );
+    await sleep(40);
+    expect(h.sends).toHaveLength(0);
+    h.events.get("session_shutdown")?.({}, h.ctx);
+  });
+
   test("a rotation in flight suppresses the nudge — the handoff comes first", async () => {
     const h = mount();
     await started(h);

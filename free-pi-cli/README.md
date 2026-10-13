@@ -92,17 +92,26 @@ run going:
 - **Keepalive** — when the session has been quiet for a minute, it gets one
   short message: continue with the task, take the next useful step, do not wait
   for input. A running turn is never interrupted, and a rotation in progress is
-  left alone. `/keepalive status | off | on | now` gets it out of the way.
+  left alone. One exception: a turn that ended on a tool call the model *printed*
+  instead of making did not do anything and nothing follows it, so it is nudged
+  at the next check rather than after the full idle window.
+  `/keepalive status | off | on | now` gets it out of the way.
 - **Rotation (3-hour shift)** — every 3 hours the session is asked to write a
   complete handoff document, and then the task continues in a **new session**
-  with the *same provider and model*. The new session opens with one message:
-  read the handoff, carry on where the last session stopped. No context death, no
-  restart of the TUI. `/rotate status | now | off | on` controls it.
+  with the *same provider and model* — the model is read at rotation time (so a
+  session switched to Antseed mid-run stays on Antseed), and the new session's
+  own `session_start` puts it back through the checked model switch. The handoff
+  document is **quoted into the new session's context**, so the next chat has it
+  even if its first turn never opens the file, and the message that opens it
+  names the file as well. No context death, no restart of the TUI.
+  `/rotate status | now | off | on` controls it.
 
 Handoff documents and their records live in `~/.free-pi/agent/handoff/`
 (`summary-<timestamp>.md` beside `latest.json`). If the agent never writes the
 document, the rotation retries once, then goes ahead anyway and says so in the
-handoff — an unattended run must not stall on a missing file.
+handoff — an unattended run must not stall on a missing file. A document too big
+for the quote (60k characters) is quoted up to that point and the file named in
+the message.
 
 Both are on by default because the point is unattended work, and both are one
 command away from off:

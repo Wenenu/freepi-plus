@@ -98,6 +98,53 @@ export interface RuntimeBuildOptions {
 }
 
 /**
+ * Recover tool calls a model printed as text — DeepSeek's DSML wrapper, an
+ * `<invoke>` block, a bare `<bash>` tag — into real tool calls, so the runtime
+ * executes them instead of leaving the session sitting on prose markup.
+ *
+ * Returns the `message_end` result the runtime should use, or undefined when
+ * there is nothing to recover. Error turns are left alone (an error message is
+ * not a call), and a block that makes the parser throw leaves the turn exactly
+ * as it was: the `agent_end` backup then says "continue", which is a far better
+ * outcome than a turn lost to a parser bug.
+ */
+function assistantText(message: any): string {
+  if (!Array.isArray(message?.content)) return "";
+  return message.content
+    .filter((block: any) => block.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text as string)
+    .join("\n");
+}
+
+function recoverPrintedToolCalls(message: any): { message: any } | undefined {
+  if (message.stopReason === "error") return undefined;
+  if (!Array.isArray(message.content)) return undefined;
+  if (message.content.some((block: any) => block.type === "toolCall")) return undefined;
+
+  const newContent: any[] = [];
+  const allToolCalls: any[] = [];
+  for (const block of message.content) {
+    try {
+      if (block.type === "text" && typeof block.text === "string") {
+        const parsed = extractTextToolCalls(block.text);
+        if (parsed.hasToolCalls) {
+          if (parsed.cleanText.length > 0) newContent.push({ type: "text", text: parsed.cleanText });
+          allToolCalls.push(...parsed.toolCalls);
+          continue;
+        }
+      }
+      newContent.push(block);
+    } catch {
+      newContent.push(block);
+    }
+  }
+
+  if (allToolCalls.length === 0) return undefined;
+  newContent.push(...allToolCalls);
+  return { message: { ...message, content: newContent, stopReason: "toolUse" } };
+}
+
+/**
  * Pure construction of the pi runtime free-pi-cli ships: which extensions
  * load, which tools are enabled, and the settings pinning `packages: []`
  * (no pi-package registry, so no MCP adapter or subagent package can be
@@ -157,6 +204,27 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
         const message = event.message;
         if (message.role !== "assistant") return;
 
+        // Recover tool calls emitted as raw text tokens (e.g. DeepSeek DSML or
+        // XML tags). This runs for EVERY provider, not just free-pi's: the
+        // models that print their calls as prose are precisely the ones reached
+        // through the Antseed fallback (DeepSeek), and gating the recovery on
+        // the provider meant a session on Antseed kept stopping dead on a
+        // printed call — the exact failure this exists to prevent.
+        const recovered = recoverPrintedToolCalls(message);
+        if (recovered) {
+          toolMarkupNudges = 0;
+          return recovered;
+        }
+        // Nothing to recover. If this turn carried no markup at all, whatever
+        // streak of printed calls the session had is over, so the nudge budget
+        // starts fresh — otherwise the safety net died permanently after two
+        // printed calls in a long, unattended run, the run where it matters
+        // most. A turn that *is* markup, and could not be recovered, keeps its
+        // count: that is the case the bound exists for.
+        if (!looksLikeToolMarkup(assistantText(message))) toolMarkupNudges = 0;
+
+        // Everything below is free-pi-provider bookkeeping (quota fallback and
+        // the context-ceiling translation), so it may keep its provider gate.
         // Auto-fallback to Antseed when FreePI quota / daily usage is exhausted
         if (message.stopReason === "error") {
           const errorMessage = message.errorMessage ?? "";
@@ -209,55 +277,16 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
           return;
         }
 
-        // Recover tool calls emitted as raw text tokens (e.g. DeepSeek DSML or XML tags)
-        if (!Array.isArray(message.content)) return;
-        const hasStructuredToolCalls = message.content.some((c: any) => c.type === "toolCall");
-        if (!hasStructuredToolCalls) {
-          const newContent: any[] = [];
-          const allToolCalls: any[] = [];
-
-          for (const block of message.content) {
-            // Recovery is best effort by design: a block that makes the parser
-            // throw (or a malformed one) must leave the turn intact, and the
-            // agent_end backup below then tells the model to continue. Losing a
-            // session to a parser bug is a far worse outcome than one unparsed
-            // block of text.
-            try {
-              if (block.type === "text" && typeof block.text === "string") {
-                const parsed = extractTextToolCalls(block.text);
-                if (parsed.hasToolCalls) {
-                  if (parsed.cleanText.length > 0) {
-                    newContent.push({ type: "text", text: parsed.cleanText });
-                  }
-                  allToolCalls.push(...parsed.toolCalls);
-                } else {
-                  newContent.push(block);
-                }
-              } else {
-                newContent.push(block);
-              }
-            } catch {
-              newContent.push(block);
-            }
-          }
-
-          if (allToolCalls.length > 0) {
-            newContent.push(...allToolCalls);
-            return {
-              message: {
-                ...message,
-                content: newContent,
-                stopReason: "toolUse",
-              },
-            };
-          }
-        }
       });
       pi.on("agent_end", (event, ctx) => {
         const lastMsg = event.messages[event.messages.length - 1];
         if (!lastMsg || lastMsg.role !== "assistant") return;
-        if (lastMsg.provider !== PROVIDER_NAME && ctx.model?.provider !== PROVIDER_NAME) return;
 
+        // A truncated turn and a turn that printed its tool call instead of
+        // making one are both "the session would now sit still" cases. Neither
+        // check is provider-specific any more: the Antseed fallback (DeepSeek)
+        // is the likeliest place for printed calls, and it used to be skipped
+        // here too, so nothing restarted the session.
         if (lastMsg.stopReason === "length") {
           pi.sendUserMessage("Continue with the task that got interrupted", { deliverAs: "followUp" });
           return;
@@ -269,13 +298,7 @@ export function buildRuntimeOptions(opts: LaunchOptions, sessionId: string): Run
         // would otherwise simply stop with the markup on screen. Say so and let
         // it re-issue the call properly. Bounded: two nudges, then leave it
         // alone rather than looping against a model that will not comply.
-        const text = Array.isArray(lastMsg.content)
-          ? lastMsg.content
-              .filter((block: any) => block.type === "text" && typeof block.text === "string")
-              .map((block: any) => block.text as string)
-              .join("\n")
-          : "";
-        if (!looksLikeToolMarkup(text)) return;
+        if (!looksLikeToolMarkup(assistantText(lastMsg))) return;
         if (toolMarkupNudges >= MAX_TOOL_MARKUP_NUDGES) return;
         toolMarkupNudges += 1;
         pi.sendUserMessage(

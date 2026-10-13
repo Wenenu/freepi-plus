@@ -27,7 +27,9 @@ function normalizeToolName(rawName: string): string {
 }
 
 function normalizeArguments(toolName: string, rawArgs: Record<string, any>): Record<string, any> {
-  const args = { ...rawArgs };
+  // Every path funnels through here, so the "the arguments arrived as one JSON
+  // blob" shape is unwrapped once, for all of them.
+  const args = mergeArgumentWrappers(rawArgs, toolName);
 
   if (toolName === "bash") {
     if (!args.command) {
@@ -108,11 +110,93 @@ function parseTagAttributes(raw: string): Record<string, string> {
 }
 
 /**
+ * The keys each tool takes as its primary argument, most specific first. Used to
+ * salvage a call whose argument blob will not parse.
+ */
+const PRIMARY_ARG_KEYS: Record<string, string[]> = {
+  bash: ["command", "cmd", "code", "script"],
+  read: ["path", "file", "filename", "filepath", "dir", "directory"],
+  ls: ["path", "dir", "directory", "file"],
+  write: ["path", "file", "filename", "filepath"],
+  edit: ["path", "file", "filename", "filepath"],
+  grep: ["pattern", "query", "path", "dir"],
+  find: ["pattern", "query", "path", "dir"],
+};
+
+const DEFAULT_PRIMARY_ARG_KEYS = ["command", "path", "pattern", "query"];
+
+/**
+ * Read one string value out of a JSON object that `JSON.parse` rejected.
+ *
+ * A hand-rolled scanner rather than a regex because the usual reason the blob is
+ * invalid is a stray quote or a raw newline *inside* the value: only a scanner
+ * can tell where the string it is reading actually ends.
+ */
+function readJsonString(raw: string, key: string): string | null {
+  const needle = `"${key}"`;
+  for (let at = raw.indexOf(needle); at !== -1; at = raw.indexOf(needle, at + 1)) {
+    let i = at + needle.length;
+    while (i < raw.length && /\s/.test(raw[i] as string)) i++;
+    if (raw[i] !== ":") continue;
+    i++;
+    while (i < raw.length && /\s/.test(raw[i] as string)) i++;
+    if (raw[i] !== '"') continue;
+    i++;
+    let out = "";
+    while (i < raw.length) {
+      const ch = raw[i] as string;
+      if (ch === "\\") {
+        const next = raw[i + 1];
+        if (next === undefined) break;
+        if (next === "n") out += "\n";
+        else if (next === "r") out += "\r";
+        else if (next === "t") out += "\t";
+        else if (next === "b") out += "\b";
+        else if (next === "f") out += "\f";
+        else if (next === "u") {
+          const hex = raw.slice(i + 2, i + 6);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(parseInt(hex, 16));
+            i += 4;
+          } else out += next;
+        } else out += next; // \" \\ \/ and any stray escape
+        i += 2;
+        continue;
+      }
+      if (ch === '"') return out;
+      out += ch;
+      i++;
+    }
+    return out; // unterminated: the call was cut off — keep what there is
+  }
+  return null;
+}
+
+/**
+ * Pull the tool's real arguments out of a JSON blob that will not parse.
+ *
+ * DeepSeek sometimes breaks one escape in the argument object (a raw newline
+ * inside a heredoc, say). `JSON.parse` then throws and the fallbacks would hand
+ * the *whole blob* to the tool as its command — a call that cannot work, and a
+ * turn lost. Scanning for the keys the tool actually takes recovers the command.
+ */
+function salvageArgumentsFromBlob(toolName: string, blob: string): Record<string, any> | null {
+  const keys = PRIMARY_ARG_KEYS[toolName] ?? DEFAULT_PRIMARY_ARG_KEYS;
+  const found: Record<string, any> = {};
+  for (const key of keys) {
+    const value = readJsonString(blob, key);
+    if (value !== null) found[key] = value;
+  }
+  return Object.keys(found).length > 0 ? found : null;
+}
+
+/**
  * A parameter tag whose value is a JSON object is the call's argument list, not
  * an argument called "arguments": unwrap it (repeatedly, for double-wrapped
- * models) and merge it with anything named explicitly alongside it.
+ * models) and merge it with anything named explicitly alongside it. A blob that
+ * is not valid JSON is salvaged key by key instead of being passed through whole.
  */
-function mergeArgumentWrappers(args: Record<string, any>): Record<string, any> {
+function mergeArgumentWrappers(args: Record<string, any>, toolName: string): Record<string, any> {
   let out = { ...args };
   for (let depth = 0; depth < 3; depth++) {
     const wrapper = Object.keys(out).find((key) => ARGUMENT_WRAPPERS.has(key.toLowerCase()));
@@ -123,7 +207,12 @@ function mergeArgumentWrappers(args: Record<string, any>): Record<string, any> {
       try {
         parsed = JSON.parse(value);
       } catch {
-        break; // a plain string (e.g. a bare command) is handled by normalizeArguments
+        // A blob we cannot parse: if it plainly names the tool's arguments, use
+        // those; otherwise leave it as a string (a bare command) for
+        // normalizeArguments to place as the primary argument.
+        const salvaged = salvageArgumentsFromBlob(toolName, value);
+        if (!salvaged) break;
+        parsed = salvaged;
       }
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) break;
@@ -134,6 +223,8 @@ function mergeArgumentWrappers(args: Record<string, any>): Record<string, any> {
     out = { ...(parsed as Record<string, any>), ...explicit };
     delete out[wrapper];
   }
+  // A blob that never made it into an object still has to land somewhere for a
+  // tool whose primary argument is a string: the wrapper's own value.
   return out;
 }
 
@@ -143,7 +234,7 @@ function mergeArgumentWrappers(args: Record<string, any>): Record<string, any> {
  * than `name` are tolerated — DeepSeek emits `string="false"` on them, and a
  * regex that insists on `name="x">` silently reads the JSON body as the command.
  */
-function parseDsmlParameters(body: string): { args: Record<string, any>; hasParams: boolean } {
+function parseDsmlParameters(body: string, toolName: string): { args: Record<string, any>; hasParams: boolean } {
   const args: Record<string, any> = {};
   let hasParams = false;
   const paired = /<[|｜]DSML[|｜]parameter\b([^>]*?)>([\s\S]*?)<\/[|｜]DSML[|｜]parameter>/gi;
@@ -161,7 +252,7 @@ function parseDsmlParameters(body: string): { args: Record<string, any>; hasPara
     hasParams = true;
     args[attrs.name] = attrs.value ?? "";
   }
-  return { args: mergeArgumentWrappers(args), hasParams };
+  return { args: mergeArgumentWrappers(args, toolName), hasParams };
 }
 
 /**
@@ -190,7 +281,8 @@ export function extractTextToolCalls(text: string): ParseResult {
     while ((match = toolRegex.exec(blockContent)) !== null) {
       const rawTool = match[1] || match[2] || match[3] || "bash";
       const body = match[4] || "";
-      const { args: rawArgs, hasParams } = parseDsmlParameters(body);
+      const toolName = normalizeToolName(rawTool);
+      const { args: rawArgs, hasParams } = parseDsmlParameters(body, toolName);
 
       if (!hasParams) {
         // If no explicit parameter tags, treat body as primary argument (e.g. command for bash)
@@ -200,7 +292,6 @@ export function extractTextToolCalls(text: string): ParseResult {
         }
       }
 
-      const toolName = normalizeToolName(rawTool);
       toolCalls.push({
         type: "toolCall",
         id: generateToolCallId(),
@@ -215,12 +306,12 @@ export function extractTextToolCalls(text: string): ParseResult {
   const dsmlLooseRegex = /<[|｜]DSML[|｜](?:call:\s*([a-zA-Z0-9_-]+)|invoke\s+name=["']?([^"'>\s]+)["']?|([a-zA-Z0-9_-]+)_tool)>([\s\S]*?)<\/[|｜]DSML[|｜](?:invoke|call:[^>]+|_tool|tools?_calls?)>/gi;
   cleanText = cleanText.replace(dsmlLooseRegex, (_, m1, m2, m3, body) => {
     const rawTool = m1 || m2 || m3 || "bash";
-    const { args: rawArgs, hasParams } = parseDsmlParameters(body);
+    const toolName = normalizeToolName(rawTool);
+    const { args: rawArgs, hasParams } = parseDsmlParameters(body, toolName);
     if (!hasParams) {
       const trimmed = body.replace(/<[^>]+>/g, "").trim();
       if (trimmed) rawArgs["command"] = trimmed;
     }
-    const toolName = normalizeToolName(rawTool);
     toolCalls.push({
       type: "toolCall",
       id: generateToolCallId(),
@@ -255,7 +346,7 @@ export function extractTextToolCalls(text: string): ParseResult {
       type: "toolCall",
       id: generateToolCallId(),
       name: toolName,
-      arguments: normalizeArguments(toolName, mergeArgumentWrappers(rawArgs)),
+      arguments: normalizeArguments(toolName, rawArgs),
     });
     return "";
   });

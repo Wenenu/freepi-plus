@@ -8,9 +8,11 @@
 //   2. when that turn finishes, records the handoff (summary path, provider,
 //      model, working directory, session) beside the summary;
 //   3. starts a NEW session in the same process — `ctx.newSession()` from the
-//      SDK, so the TUI, the provider and the terminal stay up — seeded with the
-//      same provider and model and opened with one message: read the handoff,
-//      continue where the last session left off.
+//      SDK, so the TUI, the provider and the terminal stay up — with the model
+//      the session was actually on (read at rotation time, not at startup) put
+//      back through the checked switch, and opened with the handoff document
+//      quoted into its context plus one message: continue where the last
+//      session left off.
 //
 // The session-control call is only allowed from a command handler, so the
 // rotation calls its own `/rotate-now` command through a queued message (the
@@ -23,11 +25,16 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import {
   HANDOFF_VERSION,
   type RotationHandoff,
+  handoffContext,
   handoffDir,
+  handoffPath,
   handoffPrompt,
+  readHandoff,
+  readSummary,
   summaryPathFor,
   writeHandoff as writeHandoffFile,
 } from "./handoff";
+import { applyModelSwitch } from "./model-switch";
 import { runtimeFlags } from "./runtime-flags";
 
 export const ROTATE_EXTENSION_NAME = "free-pi-rotate";
@@ -255,7 +262,17 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
           const summaryPath = pending?.summaryPath ?? null;
           const summaryWritten = Boolean(summaryPath && summaryReady(summaryPath));
           const note = summaryPath && !summaryWritten ? "The previous session did not write its summary document; its context is in the session file." : undefined;
-          count += 1;
+
+          // The model the session is on *now*, read at the moment of the
+          // rotation rather than at session_start: the user may have switched
+          // to Antseed mid-session, and the handoff has to carry that over. The
+          // recorded provider/model used to be whatever the session started on,
+          // which is how a session handed off from Antseed came back on free-pi.
+          const live = (cmdCtx as { model?: { provider?: string; id?: string } }).model;
+          if (live?.provider) provider = live.provider;
+          if (live?.id) model = live.id;
+
+          count = (readHandoff(handoffPath(opts.agentDir))?.count ?? 0) + 1;
           const handoff: RotationHandoff = {
             version: HANDOFF_VERSION,
             createdAt: now().toISOString(),
@@ -281,9 +298,18 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
           pending = null;
           runtimeFlags.rotationPending = false;
 
-          // The new session keeps the same provider and model: the model change
-          // is written into it before it is bound, so the picker and every
-          // request stay where the session left off.
+          // Two things must survive into the replacement session, and neither
+          // survives by itself:
+          //   * the provider/model, which a fresh session resolves from the
+          //     settings default — so it is recorded here *and* applied through
+          //     the checked switch by the new session's own session_start (the
+          //     SDK tears this extension instance down before the replacement
+          //     is bound, so the flag is the only channel that reaches it);
+          //   * the handoff document itself, quoted into the new transcript in
+          //     `setup`, so the next chat has the context even if its first turn
+          //     never opens the file.
+          if (provider && model) runtimeFlags.pendingModel = { provider, model };
+
           const result = await cmdCtx.newSession({
             ...(sessionFile ? { parentSession: sessionFile } : {}),
             setup: async (sm) => {
@@ -293,6 +319,19 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
                 } catch {
                   // an SDK without model-change appends: the default model stands
                 }
+              }
+              try {
+                const summary = summaryPath ? readSummary(summaryPath) : null;
+                const text = handoffContext(handoff, summary);
+                sm.appendMessage({
+                  role: "user",
+                  content: [{ type: "text", text }],
+                  timestamp: Date.now(),
+                } as unknown as Parameters<typeof sm.appendMessage>[0]);
+              } catch {
+                // A runtime without appendMessage cannot be handed the document
+                // this way; the kickoff prompt below still names the file, and
+                // the keepalive keeps the session moving either way.
               }
             },
             withSession: async (newCtx) => {
@@ -308,9 +347,11 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
 
           if (result?.cancelled) {
             // An extension cancelled the replacement: keep the session (and the
-            // schedule) alive rather than losing the run.
+            // schedule) alive rather than losing the run — and drop the pending
+            // model, or the *next* session (whenever it starts) would inherit it.
             cmdCtx.ui.notify("The new session was cancelled; continuing in this one.", "warning");
             runtimeFlags.rotationPending = false;
+            runtimeFlags.pendingModel = null;
             deadline = now().getTime() + rotateMs;
             return;
           }
@@ -327,6 +368,29 @@ export function createRotateExtension(opts: RotateOptions): InlineExtension {
         const model_ = sessionCtx.model as { provider?: string; id?: string } | undefined;
         provider = model_?.provider ?? provider;
         model = model_?.id ?? model;
+
+        // This session may be the replacement a rotation just created, in which
+        // case it starts on the settings default until we put it back on the
+        // model the rotation handed over. `pi.setModel` is the checked switch
+        // (see model-switch.ts): `appendModelChange` in `setup` only writes a
+        // record into the transcript, it does not change what the next request
+        // is sent to. This handler runs before the replacement's kickoff
+        // message, so the very first turn is already on the right model.
+        const handoffModel = runtimeFlags.pendingModel;
+        runtimeFlags.pendingModel = null;
+        if (handoffModel) {
+          const switched = await applyModelSwitch(handoffModel.provider, handoffModel.model, sessionCtx, pi);
+          if (switched.ok) {
+            provider = handoffModel.provider;
+            model = handoffModel.model;
+          } else {
+            sessionCtx.ui?.notify?.(
+              `Rotated in, but the previous session's model (${handoffModel.provider}/${handoffModel.model}) could not be restored${switched.reason ? `: ${switched.reason}` : ""}.`,
+              "warning",
+            );
+          }
+        }
+
         deadline = now().getTime() + rotateMs;
         pending = null;
         runtimeFlags.rotationPending = false;

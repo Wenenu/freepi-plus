@@ -9,7 +9,9 @@
 //
 //   * the check only fires when the session is genuinely idle (nothing
 //     streaming, no queued message) and has been quiet for `idleMs`, so it never
-//     steers a running turn or stacks nudges;
+//     steers a running turn or stacks nudges — except after a turn that ended on
+//     a tool call printed as text, which is not work in progress but work the
+//     session cannot continue on its own, and is nudged at the next check;
 //   * `/keepalive off` (or FREEPI_KEEPALIVE=0) stops it — and the timer is
 //     unref'd, so it can never be the reason a process stays alive.
 //
@@ -17,6 +19,7 @@
 // summary turn is not interrupted by a "continue" from the companion extension.
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { runtimeFlags } from "./runtime-flags";
+import { looksLikeToolMarkup } from "./text-tool-parser";
 
 export const KEEPALIVE_EXTENSION_NAME = "free-pi-keepalive";
 export const KEEPALIVE_STATUS_KEY = "free-pi-keepalive";
@@ -150,6 +153,26 @@ export function createKeepaliveExtension(opts: KeepaliveOptions = {}): InlineExt
         touch();
       });
       pi.on("message_end", touch);
+
+      // The backup for a turn that ended on tool-call markup printed as text
+      // (DeepSeek's DSML wrapper and friends). Such a turn did not do the work
+      // the model meant to do and nothing follows it — the session is exactly
+      // as idle as it looks, so bring the idle clock forward and let the next
+      // check say "continue" instead of waiting out the whole window. pi-launch
+      // also asks the model to re-issue the call properly; that ask is bounded,
+      // this one is not, because a session that has genuinely stopped is the one
+      // thing an unattended run cannot recover from.
+      pi.on("agent_end", (event) => {
+        const last = event.messages[event.messages.length - 1];
+        if (!last || last.role !== "assistant") return;
+        const text = Array.isArray(last.content)
+          ? last.content
+              .filter((block) => block.type === "text" && typeof (block as { text?: unknown }).text === "string")
+              .map((block) => (block as { text: string }).text)
+              .join("\n")
+          : "";
+        if (looksLikeToolMarkup(text)) lastActivity = 0;
+      });
 
       pi.on("session_shutdown", () => {
         stop();

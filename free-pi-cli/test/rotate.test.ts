@@ -22,7 +22,10 @@ let env: NodeJS.ProcessEnv = {};
 
 interface NewSessionCall {
   parentSession?: string;
-  setup: (sm: { appendModelChange: (provider: string, model: string) => void }) => Promise<void>;
+  setup: (sm: {
+    appendModelChange: (provider: string, model: string) => void;
+    appendMessage: (message: { role: string; content: Array<{ type: string; text: string }> }) => void;
+  }) => Promise<void>;
   withSession: (ctx: { ui: { notify: (message: string) => void }; sendUserMessage: (text: string, options?: unknown) => Promise<void> }) => Promise<void>;
 }
 
@@ -35,6 +38,12 @@ interface Harness {
   modelChanges: Array<{ provider: string; model: string }>;
   kickoffs: string[];
   newSessions: NewSessionCall[];
+  /** The messages the rotation wrote into the replacement session. */
+  appended: Array<{ role: string; content: Array<{ type: string; text: string }> }>;
+  /** What the model picker is showing *now* — a rotation must carry this over. */
+  liveModel: { provider?: string; id?: string } | undefined;
+  /** The session ctx the events are fired with (asserted on after a rotation). */
+  sessionCtx: Record<string, unknown>;
   cancelled: boolean;
   /** Fire the events the runtime fires, and let the injected command run. */
   event: (name: string) => Promise<void>;
@@ -50,7 +59,11 @@ function mount(opts: { rotateMs?: number; graceMs?: number; tickMs?: number } = 
   const modelChanges: Array<{ provider: string; model: string }> = [];
   const kickoffs: string[] = [];
   const newSessions: NewSessionCall[] = [];
-  const state = { cancelled: false };
+  const appended: Array<{ role: string; content: Array<{ type: string; text: string }> }> = [];
+  const state: { cancelled: boolean; liveModel: { provider?: string; id?: string } | undefined } = {
+    cancelled: false,
+    liveModel: undefined,
+  };
 
   const pi = {
     sendUserMessage: (text: string, options?: { deliverAs?: string; expandPromptTemplates?: boolean }) =>
@@ -83,9 +96,17 @@ function mount(opts: { rotateMs?: number; graceMs?: number; tickMs?: number } = 
 
   const commandCtx = {
     ui,
+    // Read at call time: what the user switched the session to mid-run is
+    // exactly what the rotation has to carry over.
+    get model() {
+      return state.liveModel;
+    },
     newSession: async (call: NewSessionCall) => {
       newSessions.push(call);
-      await call.setup({ appendModelChange: (provider: string, model: string) => modelChanges.push({ provider, model }) });
+      await call.setup({
+        appendModelChange: (provider: string, model: string) => modelChanges.push({ provider, model }),
+        appendMessage: (message) => appended.push(message),
+      });
       if (!state.cancelled) {
         await call.withSession({
           ui,
@@ -107,6 +128,14 @@ function mount(opts: { rotateMs?: number; graceMs?: number; tickMs?: number } = 
     modelChanges,
     kickoffs,
     newSessions,
+    appended,
+    sessionCtx,
+    get liveModel() {
+      return state.liveModel;
+    },
+    set liveModel(value: { provider?: string; id?: string } | undefined) {
+      state.liveModel = value;
+    },
     get cancelled() {
       return state.cancelled;
     },
@@ -216,6 +245,54 @@ describe("rotate — the 3-hour shift", () => {
     expect(record.summaryPath).toBe(summaryPath as string);
     expect(record.count).toBe(1);
     expect(runtimeFlags.rotationPending).toBe(false);
+    h.events.get("session_shutdown")?.({}, {});
+  });
+
+  // The bug this fixes: the record said one thing and the new session ran on
+  // another. `appendModelChange` only writes a note into the transcript — it
+  // does not change which model the next request uses — so a session switched to
+  // Antseed mid-run came back on free-pi's default, and the handoff was a lie.
+  test("the replacement is put back on the model the old session was really on", async () => {
+    const h = mount();
+    h.liveModel = { provider: "antseed", id: "deepseek-v4.1-flash" };
+    await startAndWait(h);
+    const summaryPath = /(\S+summary-[^\s]+\.md)/.exec(h.sends[0]?.text ?? "")?.[1] as string;
+    writeFileSync(summaryPath, "# Handoff\n\nContinue the audit.\n");
+    await h.event("agent_end");
+    await h.runCommand(ROTATE_NOW_COMMAND);
+
+    expect(h.modelChanges).toEqual([{ provider: "antseed", model: "deepseek-v4.1-flash" }]);
+    const record = JSON.parse(readFileSync(handoffPath(agentDir), "utf8")) as Record<string, unknown>;
+    expect(record.provider).toBe("antseed");
+    expect(record.model).toBe("deepseek-v4.1-flash");
+
+    // The old extension instance cannot switch the model (the SDK makes it stale
+    // the moment the session is replaced), so the request is handed to the new
+    // session's own session_start, which runs before its kickoff message.
+    expect(runtimeFlags.pendingModel).toEqual({ provider: "antseed", model: "deepseek-v4.1-flash" });
+    const replacement = { cwd: agentDir, model: { provider: "free-pi", id: "deepseek-v4-flash" }, sessionManager: {}, ui: { notify: () => {}, setStatus: () => {} } };
+    await h.events.get("session_start")?.({ type: "session_start" }, replacement);
+    expect(replacement.model).toEqual({ provider: "antseed", id: "deepseek-v4.1-flash" });
+    expect(runtimeFlags.pendingModel).toBeNull();
+
+    h.events.get("session_shutdown")?.({}, {});
+  });
+
+  test("the handoff document is quoted into the new session, not just named", async () => {
+    const h = mount();
+    await startAndWait(h);
+    const summaryPath = /(\S+summary-[^\s]+\.md)/.exec(h.sends[0]?.text ?? "")?.[1] as string;
+    writeFileSync(summaryPath, "# Twyne handoff\n\nNEXT: check `_canLiquidate` scenario 2.\n");
+    await h.event("agent_end");
+    await h.runCommand(ROTATE_NOW_COMMAND);
+
+    expect(h.appended).toHaveLength(1);
+    const quoted = h.appended[0]?.content[0]?.text ?? "";
+    expect(h.appended[0]?.role).toBe("user");
+    expect(quoted).toContain("NEXT: check `_canLiquidate` scenario 2.");
+    expect(quoted).toContain(summaryPath);
+    // The kickoff still names the file, so a truncated quote can be completed.
+    expect(h.kickoffs[0]).toContain(summaryPath);
     h.events.get("session_shutdown")?.({}, {});
   });
 

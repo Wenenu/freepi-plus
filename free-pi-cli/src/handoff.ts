@@ -3,10 +3,17 @@
 // should be told. Everything here is pure (paths, JSON, prompt text, and the
 // decision to relaunch) so the whole rotation can be tested without starting a
 // TUI, spending allowance, or waiting three hours.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const HANDOFF_VERSION = 1;
+
+/**
+ * How much of the handoff document is quoted into the new session. Generous on
+ * purpose — the document *is* the context a rotation exists to carry — but
+ * bounded, because a runaway summary must not itself fill the new context.
+ */
+export const MAX_HANDOFF_CHARS = 60_000;
 
 /** Where rotations keep their summary documents and markers. */
 export function handoffDir(agentDir: string): string {
@@ -69,6 +76,62 @@ export function rotationCount(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
+/**
+ * The handoff document, ready to be put in front of the new session.
+ *
+ * `null` when there is nothing usable on disk. A document larger than
+ * `maxChars` comes back with `truncated: true` and the caller points at the
+ * file for the rest — a session handed a truncated summary plus the path is
+ * strictly better off than one handed a path it may never open.
+ */
+export function readSummary(
+  path: string,
+  maxChars: number = MAX_HANDOFF_CHARS,
+): { text: string; truncated: boolean } | null {
+  if (!path) return null;
+  try {
+    if (!statSync(path).isFile() || statSync(path).size === 0) return null;
+    const raw = readFileSync(path, "utf8");
+    if (raw.trim() === "") return null;
+    if (raw.length <= maxChars) return { text: raw, truncated: false };
+    // Cut on a line boundary where there is one, so the quote does not end
+    // mid-sentence.
+    const head = raw.slice(0, maxChars);
+    const lastNewline = head.lastIndexOf("\n");
+    return { text: lastNewline > maxChars / 2 ? head.slice(0, lastNewline) : head, truncated: true };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The message a rotation writes *into* the new session before it is opened.
+ *
+ * It is the belt to the kickoff prompt's braces: the new session has no memory,
+ * and asking it to "read this file" only works if the model actually opens it.
+ * Quoting the document into the transcript means the handoff is present even if
+ * the first turn never touches the filesystem.
+ */
+export function handoffContext(handoff: RotationHandoff, summary: { text: string; truncated: boolean } | null): string {
+  const head = [
+    "[free-pi rotation] The previous session working on this task was rotated out to keep its context manageable.",
+    summary
+      ? "Its handoff document is quoted below. Treat it as your working state: continue the task from it."
+      : "It did not leave a handoff document; pick the work up from the state of the working directory.",
+  ];
+  if (summary) {
+    head.push("", `--- HANDOFF DOCUMENT (${handoff.summaryPath}) ---`, summary.text.trimEnd());
+    if (summary.truncated) {
+      head.push(
+        `--- DOCUMENT TRUNCATED AT ${MAX_HANDOFF_CHARS} CHARACTERS — read the rest from ${handoff.summaryPath} ---`,
+      );
+    }
+    head.push("--- END HANDOFF DOCUMENT ---");
+  }
+  if (handoff.note) head.push("", `Note from the rotation: ${handoff.note}`);
+  return head.join("\n");
+}
+
 export interface RotationPolicy {
   /** A rotation is only honoured for a handoff at most this old. */
   maxAgeMs: number;
@@ -125,9 +188,8 @@ export function handoffPrompt(handoff: RotationHandoff): string {
   const lines = [
     "You are continuing a long-running task in a new session. The previous session was rotated out to keep its context manageable.",
     "",
-    `Read this handoff document first, in full, before doing anything else:`,
-    handoff.summaryPath,
-    "",
+    `Its full handoff document is quoted in this session's context above, and the file is at: ${handoff.summaryPath}`,
+    "Read the quoted document (or the file, if the quote was truncated) before doing anything else.",
     "It contains the task, what has already been done, what remains, and the next steps that were planned.",
   ];
   if (handoff.note) {

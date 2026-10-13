@@ -142,6 +142,51 @@ describe("extractTextToolCalls — the DSML shapes that used to stop the chat", 
     }
   });
 
+  // The same call, with one escape broken — a raw newline inside the heredoc, as
+  // the model really emitted it. The blob is no longer valid JSON, and the old
+  // fallback handed the whole `{"command": …}` text to bash as the command.
+  test("recovers the command from an argument blob whose escaping is broken", () => {
+    const inner = `print(os.environ.get("ALCHEMY_API_KEY", ""))`;
+    const command = `cd /root/workspace/bugbounty && python3 - <<'EOF'\nimport os\n${inner}\nEOF`;
+    // The quotes are escaped, the newlines are not: that one broken escape is
+    // exactly what makes JSON.parse throw. It used to hand bash the whole blob.
+    const brokenBlob = `{"command": "cd /root/workspace/bugbounty && python3 - <<'EOF'\nimport os\n${inner.replace(/"/g, '\\"')}\nEOF"}`;
+    expect(() => JSON.parse(brokenBlob)).toThrow();
+
+    const res = extractTextToolCalls(
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n<｜DSML｜parameter name="arguments" string="false">${brokenBlob}</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>`,
+    );
+    expect(res.toolCalls).toHaveLength(1);
+    expect(res.toolCalls[0]?.arguments).toEqual({ command });
+  });
+
+  test("salvages a call whose argument string was cut off inside a complete block", () => {
+    const res = extractTextToolCalls(
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n<｜DSML｜parameter name="arguments">{"command": "ls -la /root</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>`,
+    );
+    expect(res.toolCalls).toHaveLength(1);
+    expect(res.toolCalls[0]?.arguments).toEqual({ command: "ls -la /root" });
+  });
+
+  test("a call the model never closed is left alone — the nudge asks for it again", () => {
+    // A markup block whose closing tags never arrived: the arguments are cut off
+    // mid-command, and running a truncated shell command is worse than asking
+    // for the call again. It must still be recognized as markup, because that is
+    // what makes the session say "continue" instead of stopping.
+    const text = `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="bash">\n<｜DSML｜parameter name="arguments">{"command": "ls -la /root`;
+    const res = extractTextToolCalls(text);
+    expect(res.hasToolCalls).toBe(false);
+    expect(looksLikeToolMarkup(text)).toBe(true);
+  });
+
+  test("unwraps a non-bash tool's argument blob into the argument that tool takes", () => {
+    const res = extractTextToolCalls(
+      `<｜DSML｜tool_calls>\n<｜DSML｜invoke name="read">\n<｜DSML｜parameter name="arguments">{"path": "/root/workspace/x.md", "limit": 40}</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>`,
+    );
+    expect(res.toolCalls[0]?.name).toBe("read");
+    expect(res.toolCalls[0]?.arguments).toMatchObject({ path: "/root/workspace/x.md" });
+  });
+
   test("unwraps a plain `arguments` string that is not JSON into the primary argument", () => {
     const res = extractTextToolCalls(`<｜DSML｜tool_calls>
 <｜DSML｜invoke name="bash">

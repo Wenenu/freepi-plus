@@ -120,6 +120,45 @@ describe("a tool call printed as text is executed, not printed", () => {
     expect(h.sent).toHaveLength(2);
   });
 
+  // The failure that mattered most in practice: the recovery used to run only
+  // for the free-pi provider, and the models that print their calls as text are
+  // exactly the ones reached through the Antseed fallback (DeepSeek). A session
+  // on Antseed therefore stopped on every printed call, with nothing to
+  // restart it. Both mechanisms are provider-blind now.
+  test("a session on Antseed recovers the call and is nudged the same way", async () => {
+    const h = harness();
+    const antseed = { model: { provider: "antseed" } };
+    const recovered = (await h.on.get("message_end")?.(
+      { message: { ...assistantMessage([{ type: "text", text: DSML_CALL }]), provider: "antseed" } },
+      antseed,
+    )) as { message: { stopReason: string; content: Array<Record<string, unknown>> } };
+
+    expect(recovered?.message.stopReason).toBe("toolUse");
+    expect(recovered.message.content.some((block) => block.type === "toolCall")).toBe(true);
+
+    const lost = { messages: [{ ...assistantMessage([{ type: "text", text: "<｜DSML｜tool_calls>\n<｜DSML｜" }]), provider: "antseed" }] };
+    h.on.get("agent_end")?.(lost, antseed);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.text).toContain("Re-issue it as a real tool call");
+  });
+
+  test("a clean turn gives the nudge budget back, so a long run keeps its safety net", () => {
+    const h = harness();
+    const handler = h.on.get("agent_end");
+    const messageEnd = h.on.get("message_end");
+    const lost = { messages: [assistantMessage([{ type: "text", text: "<｜DSML｜tool_calls>\n<｜DSML｜" }])] };
+
+    handler?.(lost, h.ctx);
+    handler?.(lost, h.ctx);
+    expect(h.sent).toHaveLength(2);
+
+    // A turn that carried no markup at all: the streak is over.
+    messageEnd?.({ message: assistantMessage([{ type: "text", text: "Step done. Next: check the report." }]) }, h.ctx);
+
+    handler?.(lost, h.ctx);
+    expect(h.sent).toHaveLength(3);
+  });
+
   test("an ordinary finished turn is not nudged, and a truncated one still is", () => {
     const h = harness();
     const handler = h.on.get("agent_end");

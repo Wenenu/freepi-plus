@@ -33,16 +33,39 @@ build); this file is the fuller human record.
   (`string="false"`), and the whole argument object wrapped in a parameter named
   `arguments`. Those calls were left as prose, the session stopped, and the work
   with it. All of them are now recovered into real calls.
+- **The printed-call recovery ran for one provider only.** It sat behind the
+  free-pi-provider gate, and the models that print their calls as text are
+  exactly the ones reached through the Antseed fallback (DeepSeek) — so a session
+  on Antseed kept stopping dead on every printed call, with nothing to restart
+  it. Recovery and the re-issue nudge are provider-blind now, and the nudge
+  budget is given back by any turn that carries no markup, so one long run no
+  longer exhausts its safety net.
 - When a printed call still cannot be recovered, the session is told so and asked
-  to re-issue it through the tool-calling API — at most twice, so a model that
-  will not comply cannot loop.
+  to re-issue it through the tool-calling API — at most twice in a row, so a model
+  that will not comply cannot loop. A call the model never closed is deliberately
+  left alone (a truncated shell command is worse than asking again).
+- A tool call whose argument blob arrived with one broken escape (a raw newline
+  inside a heredoc, as DeepSeek emits it) used to be handed to the tool as its
+  command — the whole `{"command": …}` text. The blob is now salvaged key by key.
+- **A rotation's handoff told the truth about the model again.** The record named
+  the provider and model, but `appendModelChange` only writes a note into the
+  transcript; it does not change what the next request uses, so a new session
+  opened on free-pi's default while the handoff said `antseed`. The model is now
+  read at rotation time (the live picker value, not the one the session started
+  on) and put back by the replacement's own `session_start` through the checked
+  model switch — so the first turn of the new session is already on the right
+  model.
 
 ### Added
 - **Keepalive**: an idle session is nudged to continue (`/keepalive status | off |
-  on | now`; `FREEPI_KEEPALIVE=0` disables). A running turn is never interrupted.
+  on | now`; `FREEPI_KEEPALIVE=0` disables). A running turn is never interrupted,
+  and a turn that ended on printed tool markup is nudged at the next check rather
+  than after the full idle window.
 - **Rotation, every 3 hours**: the session writes a full handoff document, then the
-  task continues in a **new session with the same provider and model**, opened by a
-  message naming that document and telling it to carry on from there
+  task continues in a **new session with the same provider and model**. The
+  document is quoted into the new session's context (up to 60k characters; the
+  file is named for anything beyond that), and the message that opens the session
+  tells it to carry on from there
   (`/rotate status | now | off | on`; `FREEPI_ROTATE=0` disables,
   `FREEPI_ROTATE_MS` sets the shift). Documents and records live in
   `~/.free-pi/agent/handoff/`. A missing document is retried once and then noted in
