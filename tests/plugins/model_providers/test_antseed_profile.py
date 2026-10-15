@@ -62,7 +62,8 @@ def antseed_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    for var in ("ANTSEED_BASE_URL", "ANTSEED_API_KEY", "ANTSEED_CLI_COMMAND"):
+    for var in ("ANTSEED_BASE_URL", "ANTSEED_API_KEY", "ANTSEED_CLI_COMMAND",
+                "ANTSEED_IDENTITY_HEX"):
         monkeypatch.delenv(var, raising=False)
     return home
 
@@ -276,6 +277,63 @@ class TestAntseedStatusLine:
         assert antseed_module.antseed_status_text("gpt-6.1-sol", balance) == (
             "[Antseed] gpt-6.1-sol · $0.45 USDC left · buyer connecting"
         )
+
+
+# ── The buyer identity Hermes reports but never reads ────────────────────────
+
+
+class TestAntseedIdentity:
+    """The daemon owns the wallet key; Hermes only ever says where it found it.
+
+    Antseed's own lookup order is the environment variable, then ``identity.key``
+    in the data directory — the Local proxy authenticates by the daemon's on-chain
+    identity, so a client credential is not what is missing when inference fails.
+    """
+
+    def test_reports_the_key_file_the_daemon_will_use(self, antseed_module, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("ANTSEED_IDENTITY_HEX", raising=False)
+        assert antseed_module.antseed_identity_source() is None
+
+        key = tmp_path / ".antseed" / "identity.key"
+        key.parent.mkdir()
+        key.write_text("0x" + "ab" * 32, encoding="utf-8")
+
+        assert antseed_module.antseed_identity_source() == str(key)
+
+    def test_environment_wins_and_the_key_itself_is_never_returned(
+        self, antseed_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        secret = "0x" + "cd" * 32
+        monkeypatch.setenv("ANTSEED_IDENTITY_HEX", secret)
+
+        source = antseed_module.antseed_identity_source()
+
+        assert source == "$ANTSEED_IDENTITY_HEX"
+        assert secret not in source  # the name of the variable, never its value
+
+    def test_usage_names_the_identity_and_a_missing_one(
+        self, antseed_module, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("ANTSEED_IDENTITY_HEX", raising=False)
+        balance = antseed_module.AntseedBalance(available_usd=0.45, connection_state="connected")
+
+        # Nowhere to read one from: the reason says which two places to put it.
+        reason = antseed_module.antseed_unavailable_reason(daemon_reachable=False)
+        assert "antseed buyer start" in reason
+        assert "identity.key" in reason and "ANTSEED_IDENTITY_HEX" in reason
+        assert not any("buyer identity" in line
+                       for line in antseed_module.antseed_balance_details(balance))
+
+        key = tmp_path / ".antseed" / "identity.key"
+        key.parent.mkdir()
+        key.write_text("present", encoding="utf-8")
+
+        assert f"buyer identity: {key}" in antseed_module.antseed_balance_details(balance)
+        # And a daemon that is merely stopped is no longer blamed for it.
+        assert "identity" not in antseed_module.antseed_unavailable_reason(daemon_reachable=False)
 
 
 # ── Auth wiring: selectable, credential-less, never auto-detected ─────────────

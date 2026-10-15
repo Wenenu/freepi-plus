@@ -54,6 +54,16 @@ Both scripts are Hermes' own dev-environment entry points: they stage the pinned
 changed with Antseed — the provider is a plugin plus four small core edits, all
 of them pure Python.
 
+Either script publishes the usual `hermes` commands **and `anthermes`**, this
+build's name for the same agent: the alias is one small forwarder file pointing
+at the installation's own launcher, so `hermes` and `anthermes` can never drift —
+an update that renews one renews the other. For a checkout you have not built yet
+(`pm` not run), publish just the alias against its own interpreter:
+
+```bash
+python hermes_cli/_launchers.py ~/.local/bin --dev      # Windows: %LOCALAPPDATA%\hermes\bin
+```
+
 To run the test suite the way CI does:
 
 ```bash
@@ -102,6 +112,7 @@ Provider: antseed
 available: $0.45 USDC
 reserved: $2.00 USDC (committed to open payment channels; returned when they close)
 deposit account: 0x1111…1111
+buyer identity: /home/you/.antseed/identity.key
 buyer daemon: connected
 open payment channels: 3
 ```
@@ -119,6 +130,7 @@ buyer start``, never as a failure: every Antseed read fails open.
 | `ANTSEED_BASE_URL` | Buyer proxy on another host/port. The bare host is fine — `/v1` is appended. Default `http://127.0.0.1:8377` |
 | `ANTSEED_API_KEY` | Only needed if you front the daemon with a proxy that checks a bearer |
 | `ANTSEED_CLI_COMMAND` | How to invoke the `antseed` CLI when it is not on `PATH`. Defaults to `antseed`, then `npx -y @antseed/cli` |
+| `ANTSEED_IDENTITY_HEX` | The **daemon's** identity key, for a machine that does not already have `~/.antseed/identity.key`. Hermes never reads the key itself — the local proxy authenticates by the daemon's on-chain identity, not by a client credential — it only reports which of the two the daemon is using |
 
 Antseed is deliberately **never auto-detected** from the environment
 (`_NO_AUTO_DETECT_PROVIDERS`): a stray `ANTSEED_API_KEY` must not silently move

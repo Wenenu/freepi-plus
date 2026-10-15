@@ -139,6 +139,36 @@ def is_antseed_reachable(
     return False
 
 
+#: How the buyer daemon locates its on-chain identity, in Antseed's own order
+#: (https://antseed.com/docs/buyer-config/): the environment variable first, then
+#: ``identity.key`` inside the data directory.
+ANTSEED_IDENTITY_ENV = "ANTSEED_IDENTITY_HEX"
+
+#: The buyer's data directory, next to the CLI's config and state files.
+ANTSEED_DATA_DIRNAME = ".antseed"
+
+
+def antseed_data_dir() -> Path:
+    """The buyer daemon's data directory (``~/.antseed``)."""
+    return Path.home() / ANTSEED_DATA_DIRNAME
+
+
+def antseed_identity_source(env: dict[str, str] | None = None) -> str | None:
+    """Where the daemon will find its identity, or ``None`` where it will find none.
+
+    Presence only — Hermes never reads the key material. The local proxy authenticates by
+    the daemon's on-chain identity rather than by a client credential, so Hermes has no use
+    for the key itself; this exists so a balance read can name the piece that is missing
+    instead of blaming the CLI, and so ``/usage`` can confirm the key already on the machine
+    is the one the daemon is using.
+    """
+    environ = env if env is not None else _environ()
+    if str(environ.get(ANTSEED_IDENTITY_ENV) or "").strip():
+        return f"${ANTSEED_IDENTITY_ENV}"
+    key = antseed_data_dir() / "identity.key"
+    return str(key) if key.is_file() else None
+
+
 # ── Balance (the `antseed` CLI) ───────────────────────────────────────────────
 
 
@@ -317,8 +347,17 @@ def antseed_unavailable_reason(*, daemon_reachable: bool | None = None) -> str:
     blaming the CLI.
     """
     if daemon_reachable is False:
-        return "no Antseed buyer daemon is listening — start one with `antseed buyer start`"
-    return "the antseed CLI reported no balance (is `antseed` installed, and the buyer funded?)"
+        reason = "no Antseed buyer daemon is listening — start one with `antseed buyer start`"
+    else:
+        reason = "the antseed CLI reported no balance (is `antseed` installed, and the buyer funded?)"
+    # A daemon with no identity cannot connect or pay, and the user asked to have the key
+    # already on the machine used — so name it when it is absent rather than only its symptom.
+    if antseed_identity_source() is None:
+        reason += (
+            f"; no buyer identity is set — put the key at {antseed_data_dir() / 'identity.key'} "
+            f"or in ${ANTSEED_IDENTITY_ENV}"
+        )
+    return reason
 
 
 def antseed_balance_details(
@@ -345,6 +384,9 @@ def antseed_balance_details(
         )
     if balance.address:
         lines.append(f"deposit account: {balance.address}")
+    identity = antseed_identity_source()
+    if identity:
+        lines.append(f"buyer identity: {identity}")
     if balance.connection_state:
         lines.append(f"buyer daemon: {balance.connection_state}")
     if balance.active_channels is not None:
