@@ -1,0 +1,5 @@
+name: antseed-provider
+kind: model-provider
+version: 1.0.0
+description: Antseed (P2P inference over the local buyer daemon, paid in USDC)
+author: freepi-plus

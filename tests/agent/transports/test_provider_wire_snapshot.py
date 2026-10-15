@@ -65,6 +65,9 @@ MODELS = {
     "alibaba-cn": "qwen3.5-plus", "alibaba-token-plan": "qwen3.5-plus", "alibaba-token-plan-cn": "qwen3.5-plus",
     "alibaba-coding-plan-cn": "qwen3-coder-plus", "deepinfra": "deepseek-ai/DeepSeek-V4",
     "router": "openai/gpt-5.5", "openrouter": "anthropic/claude-opus-5.5", "custom": "my-local-model",
+    # Antseed's own catalog is 583 ids wide and peer-supplied, so pin a real one here rather than
+    # letting the cell take the catalog's first entry.
+    "antseed": "deepseek-v4-flash",
 }
 # Providers with a user-configured endpoint, or outside the auth registry.
 BASE_URLS = {

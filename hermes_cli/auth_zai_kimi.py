@@ -165,3 +165,17 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
             root = root[: -len(suffix)].rstrip("/")
             break
     return (root or "http://127.0.0.1:1234") + "/v1"
+
+
+def _normalize_antseed_runtime_base_url(base_url: str) -> str:
+    """Return the OpenAI-compatible Antseed runtime base URL.
+
+    Antseed's buyer proxy serves inference under ``/v1`` (loopback ``127.0.0.1:8377`` by default,
+    or a ``ANTSEED_BASE_URL`` pointing at a daemon on another host). A user who pastes the bare
+    host — the form ``antseed buyer start`` prints — would otherwise have the SDK post to
+    ``/chat/completions`` and get a 404, so append the suffix the same way freepi-plus does.
+    """
+    root = str(base_url or "").strip().rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")].rstrip("/")
+    return (root or "http://127.0.0.1:8377") + "/v1"

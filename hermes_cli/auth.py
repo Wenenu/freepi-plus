@@ -34,7 +34,8 @@ from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
-    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
+    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_antseed_runtime_base_url,
+    _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
 from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
@@ -99,7 +100,7 @@ from hermes_cli.auth_constants import (
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    LMSTUDIO_NOAUTH_PLACEHOLDER,
+    LMSTUDIO_NOAUTH_PLACEHOLDER, ANTSEED_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,10 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
     ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
+    # Antseed (plugins/model-providers/antseed): P2P inference served by the buyer's own daemon. A
+    # loopback endpoint like LM Studio, and just as likely to be absent — `antseed buyer start` is a
+    # manual step, and ANTSEED_BASE_URL points at a daemon on another host when it is not local.
+    ("antseed", "Antseed", "http://127.0.0.1:8377/v1", ("ANTSEED_API_KEY",), "ANTSEED_BASE_URL"),
     ("copilot", "GitHub Copilot", DEFAULT_GITHUB_MODELS_BASE_URL,
      ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
     ProviderConfig(
@@ -1474,6 +1479,10 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
     "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
+    # Antseed's own spellings. Deliberately NOT aliases of `custom`: the profile carries the daemon's
+    # endpoint, the USDC balance read and the bundled catalog, all of which a generic custom provider
+    # would lose.
+    "antseed": "antseed", "ant-seed": "antseed", "antseed-p2p": "antseed",
     # Local server aliases — route through the generic custom provider
     "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
@@ -1597,10 +1606,17 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
 
 
 # API-key providers never auto-selected from env: GitHub tokens are commonly present for repo/tool
-# access and must not hijack inference; LM Studio is a local server whose availability isn't
-# implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder). Both need an explicit
-# choice.
-_NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
+# access and must not hijack inference; LM Studio and Antseed are local servers whose availability is
+# not implied by LM_API_KEY / ANTSEED_API_KEY (both may be offline, and both have a no-auth
+# placeholder). All three need an explicit choice.
+_NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio", "antseed"})
+
+# Local providers that run without a credential but must still look configured to the runtime, so it
+# will select them. The value is sent as a bearer to a loopback endpoint and nothing else.
+_LOCAL_NOAUTH_PLACEHOLDERS = {
+    "lmstudio": LMSTUDIO_NOAUTH_PLACEHOLDER,
+    "antseed": ANTSEED_NOAUTH_PLACEHOLDER,
+}
 
 
 def _env_key_auto_detected(
@@ -2281,6 +2297,7 @@ _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
     "zai": _resolve_zai_base_url,
     "copilot": _copilot_runtime_base_url,
     "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
+    "antseed": lambda *a: _normalize_antseed_runtime_base_url(_default_api_key_base_url(*a)),
     "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
 
 
@@ -2293,10 +2310,10 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
             provider=provider_id, code="invalid_provider")
 
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    # No-auth LM Studio: a placeholder so runtime / auxiliary_client see the local server as
+    # No-auth local servers: a placeholder so runtime / auxiliary_client see the local server as
     # configured. doctor still reports unconfigured because the status path uses the raw secret.
-    if not api_key and provider_id == "lmstudio":
-        api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+    if not api_key and provider_id in _LOCAL_NOAUTH_PLACEHOLDERS:
+        api_key = _LOCAL_NOAUTH_PLACEHOLDERS[provider_id]
         key_source = key_source or "default"
 
     env_url = _provider_env_base_url(pconfig)

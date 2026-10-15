@@ -117,6 +117,10 @@ OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oau
 # treat the provider as configured. Sent only to LM Studio, never to a remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
 ACTUAL_LOCAL_NOAUTH_PLACEHOLDER = "dummy-actual-local-api-key"
+# Antseed's buyer proxy authenticates by the on-chain buyer identity key, so it ignores this bearer —
+# it exists only so the provider counts as configured and can be selected. Sent to the loopback buyer
+# daemon and nothing else; freepi-plus (the client this profile is ported from) uses the same literal.
+ANTSEED_NOAUTH_PLACEHOLDER = "antseed-local"
 
 # Upstream rate-limit / usage-quota exhaustion (HTTP 429): transient, re-authenticating cannot resolve
 # it, so it must stay distinct from missing/expired-credential errors.
