@@ -108,6 +108,15 @@ ENTRY_POINTS = {
     "hermes-acp": ("acp_adapter.entry", "main"),
 }
 
+#: Extra command names this installation answers to. Each is published beside the canonical
+#: launchers as a forwarder to one of them ("anthermes" is freepi's name for the `hermes`
+#: command). A forwarder is deliberately NOT a third ENTRY_POINTS name: everything that
+#: republishes, repairs, migrates or uninstalls commands owns exactly ``WINDOWS_BIN_LAUNCHERS``,
+#: and an alias they were never told about would rot the moment one of them ran. Naming the
+#: durable launcher by absolute path instead means `hermes update` renews that launcher and the
+#: alias follows it, and no other installation's `hermes` earlier on PATH can shadow it.
+COMMAND_ALIASES = ("anthermes",)
+
 
 def _is_windows() -> bool:
     return os.name == "nt"
@@ -128,6 +137,21 @@ def resolve_store_python(repo_root: Path, *, publication: bool = False) -> Path 
         if own is not None:
             return own
     return _store_python(store_root(repo_root))
+
+
+def resolve_dev_python(repo_root: Path) -> Path | None:
+    """This checkout's own venv interpreter — the one ``activate`` puts first.
+
+    A tree PM has not built yet has no durable launcher to name, so ``--dev`` publishes the
+    aliases against this instead. Both spellings of the venv layout are tried, in the order
+    the activation scripts use.
+    """
+    for relative in (".venv/Scripts/python.exe", "venv/Scripts/python.exe",
+                     ".venv/bin/python", "venv/bin/python"):
+        candidate = Path(repo_root) / relative
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _store_python(runtime: Path) -> Path | None:
@@ -548,6 +572,103 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
+def _alias_command(target: Path) -> list[str] | None:
+    """The command a published alias forwards to, or None for any other file.
+
+    Only the exact two-line shape :func:`publish_command_alias` writes is read back. A
+    hand-written command that happens to share the name is never guessed at, and so never
+    replaced.
+    """
+    try:
+        lines = target.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    if len(lines) != 2:
+        return None
+    header, body = lines[0].strip(), lines[1].strip()
+    quoted = False
+    if header == "@echo off":
+        if not body.endswith(" %*"):
+            return None
+        body, quoted = body[: -len(" %*")], True
+    elif header == "#!/bin/sh":
+        if not body.startswith("exec ") or not body.endswith(' "$@"'):
+            return None
+        body = body[len("exec "): -len(' "$@"')]
+    else:
+        return None
+    try:
+        tokens = shlex.split(body, posix=not quoted)
+    except ValueError:
+        return None
+    return [token.strip('"') for token in tokens] if quoted else tokens
+
+
+def _alias_body(command: list[str]) -> bytes:
+    """A forwarder carrying exactly *command*, with no interpreter pin of its own."""
+    if _is_windows():
+        return ("@echo off\r\n" + " ".join(f'"{token}"' for token in command) + " %*\r\n").encode("utf-8")
+    return ("#!/bin/sh\nexec " + shlex.join(command) + ' "$@"\n').encode("utf-8")
+
+
+def _under(root: Path, token: str) -> bool:
+    """Does *token* name something inside *root* — i.e. a command we could have written?"""
+    if not token:
+        return False
+    try:
+        return Path(token).resolve().is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def publish_command_alias(name: str, repo_root: Path, out_dir: Path, command: list[str]) -> Path | None:
+    """Publish *name* in *out_dir* as a forwarder to *command*, or None.
+
+    A file of the same name this installation did not write is left exactly where it is: a
+    third party's ``anthermes`` is never taken over, and neither is an ``.exe`` that would
+    shadow anything written here.
+    """
+    root = Path(repo_root).resolve()
+    out_dir = Path(out_dir)
+    if _is_windows() and (out_dir / f"{name}.exe").exists():
+        return None  # Windows runs the .exe; a .cmd beside it would only be dead weight
+    target = out_dir / (f"{name}.cmd" if _is_windows() else name)
+    if target.exists() or target.is_symlink():
+        existing = _alias_command(target)
+        if existing is None or not all(_under(root, token) for token in existing):
+            return None
+    body = _alias_body(command)
+    try:
+        if target.read_bytes() == body:
+            return target  # already this exact forwarder: leave its mtime alone
+    except OSError:
+        pass
+
+    def write(staging: Path) -> None:
+        staging.write_bytes(body)
+        if not _is_windows():
+            staging.chmod(0o755)
+
+    return _write_atomic(target, write)
+
+
+def _published_launcher(local: Path, name: str) -> Path | None:
+    """The canonical command beside *local*: distlib's ``.exe`` wins, else the ``.cmd``."""
+    for candidate in ((f"{name}.exe", f"{name}.cmd") if _is_windows() else (name,)):
+        path = Path(local) / candidate
+        if path.is_file():
+            return path
+    return None
+
+
+def _publish_aliases(root: Path, out_dir: Path, command: list[str] | None) -> list[Path]:
+    """Every :data:`COMMAND_ALIASES` forwarder in *out_dir*; no canonical publishes none."""
+    if command is None:
+        return []
+    return [path for name in COMMAND_ALIASES
+            if (path := publish_command_alias(name, root, out_dir, command)) is not None]
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
@@ -724,15 +845,24 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
             continue
         if (path := stage_launcher(name, root, local)) is not None:
             written.append(str(path))
+    # Aliases name the durable launcher just ensured — never an interpreter, and never a
+    # second copy of one: an update renews that launcher and these follow it.
+    canonical = _published_launcher(local, "hermes")
+    alias_command = [str(canonical)] if canonical is not None else None
     if Path(out_dir).resolve() == local:
+        _publish_aliases(root, local, alias_command)
         return written
     if len(written) != len(WINDOWS_BIN_LAUNCHERS):
         return []
     if not _is_windows():
-        return [str(path) for path in _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)]
+        published = _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)
+        _publish_aliases(root, Path(out_dir), alias_command)
+        return [str(path) for path in published]
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    return [str(path) for name in WINDOWS_BIN_LAUNCHERS
-            if (path := stage_launcher(name, root, Path(out_dir))) is not None]
+    staged = [str(path) for name in WINDOWS_BIN_LAUNCHERS
+              if (path := stage_launcher(name, root, Path(out_dir))) is not None]
+    _publish_aliases(root, Path(out_dir), alias_command)
+    return staged
 
 
 def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict:
@@ -1031,8 +1161,21 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Publish source-install launchers.")
     parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--dev", action="store_true",
+                        help="publish only the command aliases, bound to this checkout's own "
+                             "interpreter, for a tree PM has not built")
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
+    if args.dev:
+        python = resolve_dev_python(repo_root)
+        if python is None:
+            parser.exit(1, "hermes: no .venv interpreter in this checkout; run setup-hermes first\n")
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        written = _publish_aliases(repo_root, args.out_dir, [str(python), str(repo_root / "hermes")])
+        if not written:
+            parser.exit(1, "hermes: no alias published (another command owns the name)\n")
+        print("\n".join(str(path) for path in written))
+        raise SystemExit(0)
     if resolve_store_python(repo_root, publication=True) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)

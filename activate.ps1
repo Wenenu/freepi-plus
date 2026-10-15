@@ -127,6 +127,12 @@ function global:hermes {
     }
 }
 
+# freepi answers to `anthermes` as well. Same checkout-bound command, so an installed
+# `anthermes` (or another worktree's) cannot answer for this tree while it is active.
+function global:anthermes {
+    hermes @args
+}
+
 function global:prompt {
     $prefix = ''
     if (_hermesWorktreeHere) { $prefix = "($($global:_hermesWorktreeName)) " }
@@ -152,5 +158,5 @@ function global:deactivate {
     $global:_hermesWorktree = $null
     $global:_hermesWorktreeName = $null
     $global:_hermesSavedPrompt = $null
-    Remove-Item function:deactivate, function:hermes, function:_hermesWorktreeHere -ErrorAction SilentlyContinue
+    Remove-Item function:deactivate, function:hermes, function:anthermes, function:_hermesWorktreeHere -ErrorAction SilentlyContinue
 }

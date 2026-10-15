@@ -196,7 +196,8 @@ class TestExposeCli:
         assert _launchers.expose_cli(create=False) == {"ok": True, "written": []}
         assert not wrapper_dir.exists()
         assert not extra.exists()
-        assert {p.name for p in (root / ".hermes/bin").iterdir()} == set(_launchers.ENTRY_POINTS)
+        assert {p.name for p in (root / ".hermes/bin").iterdir()} == (
+            set(_launchers.ENTRY_POINTS) | set(_launchers.COMMAND_ALIASES))
 
         # An owned ACP entry must be repaired even without an owned hermes
         # sibling admitting this directory. Its old target is already gone.

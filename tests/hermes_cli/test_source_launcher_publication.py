@@ -204,9 +204,17 @@ def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, 
     launchers = [Path(p) for p in _launchers.ensure_install_launchers(repo, out)]
     assert {p.name for p in launchers} == set(_launchers.ENTRY_POINTS)
     assert all(os.access(p, os.X_OK) for p in launchers)
-    assert set(out.iterdir()) == set(launchers)
+    # The aliases are published beside them, as forwarders rather than as further
+    # ENTRY_POINTS names — see hermes_cli._launchers.COMMAND_ALIASES.
+    aliases = {out / name for name in _launchers.COMMAND_ALIASES}
+    assert set(out.iterdir()) == set(launchers) | aliases
     local = repo / ".hermes" / "bin"
-    assert {p.name for p in local.iterdir()} == set(_launchers.ENTRY_POINTS)
+    assert {p.name for p in local.iterdir()} == set(_launchers.ENTRY_POINTS) | set(_launchers.COMMAND_ALIASES)
+    # Each alias names the durable launcher, by absolute path, and nothing else.
+    canonical = _launchers._published_launcher(local, "hermes")
+    for alias in aliases:
+        assert os.access(alias, os.X_OK)
+        assert _launchers._alias_command(alias) == [str(canonical)]
     launcher = local / "hermes"
     expected = launcher.read_bytes()
     launcher.write_bytes(b"\xef\xbb\xbf" + expected if corruption == "bom" else expected.replace(b"\n", b"\r\n"))

@@ -222,6 +222,7 @@ if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Published Hermes commands in $bin_dir"
+echo -e "${GREEN}✓${NC} Published the alias commands alongside them (anthermes: the same agent, freepi's name)"
 
 if [ "$os" != win32 ]; then
     # Determine the appropriate shell config file
@@ -296,7 +297,7 @@ echo "  2. Run the setup wizard to configure API keys:"
 echo "     hermes setup"
 echo ""
 echo "  3. Start chatting:"
-echo "     hermes"
+echo "     hermes            # or: anthermes — the same command, freepi's name for it"
 echo ""
 echo "Other commands:"
 echo "  hermes pm install     # Re-run the tool + dependency install"

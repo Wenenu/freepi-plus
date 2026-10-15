@@ -84,6 +84,12 @@ function hermes --description 'hermes of the activated checkout'
     return $code
 end
 
+# freepi answers to `anthermes` as well. Same checkout-bound command, so an installed
+# `anthermes` (or another worktree's) cannot answer for this tree while it is active.
+function anthermes --description 'anthermes of the activated checkout'
+    hermes $argv
+end
+
 functions -c fish_prompt __hermes_saved_fish_prompt
 function fish_prompt
     if __hermes_worktree_here
@@ -107,5 +113,5 @@ function deactivate --description 'undo activate.fish'
     functions -c __hermes_saved_fish_prompt fish_prompt
     functions -e __hermes_saved_fish_prompt
     set -eg __hermes_keys __hermes_worktree __hermes_worktree_name
-    functions -e deactivate hermes __hermes_worktree_here
+    functions -e deactivate hermes anthermes __hermes_worktree_here
 end
