@@ -26,6 +26,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -63,7 +64,7 @@ def antseed_env(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     for var in ("ANTSEED_BASE_URL", "ANTSEED_API_KEY", "ANTSEED_CLI_COMMAND",
-                "ANTSEED_IDENTITY_HEX"):
+                "ANTSEED_IDENTITY_HEX", "ANTSEED_AUTOSTART"):
         monkeypatch.delenv(var, raising=False)
     return home
 
@@ -98,6 +99,18 @@ def _status_payload(**overrides) -> str:
     }
     payload.update(overrides)
     return json.dumps(payload)
+
+
+def _loaded_plugin_module(profile):
+    """The ``antseed.py`` instance the loaded profile actually calls into.
+
+    The ``antseed_module`` fixture loads the file *by path*, which is a second module object
+    with its own caches and launch bookkeeping; the profile resolves its relative import
+    through the plugin loader, so patching the fixture's copy would patch nothing. Resolved
+    through a symbol defined in the sibling (the profile's own module is the package).
+    """
+    in_sibling = type(profile).status_bar_segment.__globals__["ensure_antseed_daemon"]
+    return sys.modules[in_sibling.__globals__["__name__"]]
 
 
 # ── Registration and endpoint ─────────────────────────────────────────────────
@@ -251,6 +264,13 @@ class TestAntseedBalance:
 
 
 class TestAntseedStatusLine:
+    """The display strings, and the footer line they are rendered through.
+
+    The footer line renders the last reading (or says it is checking) and lets a thread do
+    the work: a reading is a CLI spawn plus an on-chain round trip, so it must never block a
+    repaint — freepi-plus' contract.
+    """
+
     def test_status_text_matches_freepi(self, antseed_module):
         balance = antseed_module.AntseedBalance(
             address="0x1111111111111111111111111111111111111111",
@@ -277,6 +297,70 @@ class TestAntseedStatusLine:
         assert antseed_module.antseed_status_text("gpt-6.1-sol", balance) == (
             "[Antseed] gpt-6.1-sol · $0.45 USDC left · buyer connecting"
         )
+
+
+    @staticmethod
+    def _seed(module, at, text):
+        module._STATUS_CACHE.update({"at": at, "text": text, "in_flight": False})
+
+    @staticmethod
+    def _settle(module, timeout: float = 5.0):
+        """Wait for a spawned refresh to land.
+
+        ``in_flight`` is set by the calling thread and cleared in the same update that stores
+        the reading, so waiting for it to clear is exactly waiting for a consistent cache —
+        and it keeps one test's background thread from writing over the next test's seed.
+        """
+        deadline = time.monotonic() + timeout
+        while module._STATUS_CACHE.get("in_flight") and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert not module._STATUS_CACHE.get("in_flight"), "background refresh never finished"
+
+    def test_first_reading_says_so_then_caches_the_result(self, antseed_module):
+        self._seed(antseed_module, 0.0, "")
+        reading = lambda: "[Antseed] gpt-6.1-sol · $0.45 USDC left"
+
+        first = antseed_module.antseed_status_line("gpt-6.1-sol", refresh=reading)
+
+        assert first == "[Antseed] gpt-6.1-sol · checking balance…"
+        self._settle(antseed_module)
+        calls = []
+        second = antseed_module.antseed_status_line(
+            "gpt-6.1-sol", refresh=lambda: calls.append(1) or "")
+        assert second == "[Antseed] gpt-6.1-sol · $0.45 USDC left"
+        assert calls == []  # a fresh reading is not read again
+
+    def test_a_stale_reading_refreshes_without_blocking_the_footer(self, antseed_module):
+        self._seed(antseed_module, 100.0, "[Antseed] m · $0.45 USDC left")
+
+        line = antseed_module.antseed_status_line(
+            "m", clock=lambda: 200.0, refresh=lambda: "[Antseed] m · $0.30 USDC left")
+
+        assert line == "[Antseed] m · $0.45 USDC left"  # the last reading, rendered now
+        self._settle(antseed_module)
+        assert antseed_module.antseed_status_line("m", clock=lambda: 201.0,
+                                                 refresh=lambda: "nope") == "[Antseed] m · $0.30 USDC left"
+
+    def test_a_failed_read_is_retried_after_the_shorter_ttl(self, antseed_module):
+        self._seed(antseed_module, 100.0, "")
+        calls = []
+
+        inside = antseed_module.antseed_status_line(
+            "m", clock=lambda: 105.0, refresh=lambda: calls.append(1) or "")
+
+        assert inside == "[Antseed] m · checking balance…"
+        assert calls == []  # inside the failure window: a daemon started now is not hammered
+        antseed_module.antseed_status_line(
+            "m", clock=lambda: 120.0, refresh=lambda: "[Antseed] m · $0.45 USDC left")
+        self._settle(antseed_module)
+        assert antseed_module._STATUS_CACHE["text"] == "[Antseed] m · $0.45 USDC left"
+
+    def test_the_profile_serves_the_footer_line_from_its_cache(self, antseed_profile):
+        """The real plugin feeds the bar through the profile hook, with no CLI spawn."""
+        module = _loaded_plugin_module(antseed_profile)
+        self._seed(module, time.monotonic(), "[Antseed] cached · $0.45 USDC left")
+        assert antseed_profile.status_bar_segment(model_id="m") == "[Antseed] cached · $0.45 USDC left"
+        assert not module._STATUS_CACHE["in_flight"]  # served from cache, no refresh
 
 
 # ── The buyer identity Hermes reports but never reads ────────────────────────
@@ -375,3 +459,202 @@ class TestAntseedAuthWiring:
         from hermes_cli.auth import _NO_AUTO_DETECT_PROVIDERS
 
         assert "antseed" in _NO_AUTO_DETECT_PROVIDERS
+
+
+# ── Starting the daemon: the one manual step Hermes now covers ───────────────
+
+
+class TestAntseedDaemonAutostart:
+    """``antseed buyer start`` is manual, and its absence does not read as a missing step.
+
+    It reads as a broken provider: the proxy address refuses the connection and the turn
+    spends its retries on a daemon that was never there. So Hermes launches one. No test here
+    can leave a real daemon behind — the launch seam is injected and the default one refuses
+    inside a test process (asserted below).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_launch_window(self, antseed_module):
+        """A launch in one test must not throttle the next."""
+        antseed_module._AUTOSTART.update({"attempted_at": 0.0, "started_at": 0.0})
+        yield
+
+    @staticmethod
+    def _recorder(launched, ok=True):
+        def spawn(command: str) -> bool:
+            launched.append(command)
+            return ok
+        return spawn
+
+    def test_launches_the_daemon_when_nothing_answers(self, antseed_module):
+        launched = []
+        result = antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=self._recorder(launched), env={})
+
+        # False = nothing answers *yet*: the launch deliberately does not wait for the proxy
+        # to bind (10+ s on the machine this was built on) — it binds while the refused
+        # request is already backing off, which is what turns the first turn into an answer.
+        assert result is False
+        assert launched == ["antseed buyer start --port 8377"]
+
+    def test_a_proxy_that_answers_is_left_running(self, antseed_module):
+        launched = []
+
+        assert antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: True, spawn=self._recorder(launched), env={}) is True
+        assert launched == []
+
+    def test_a_remote_proxy_never_gets_a_local_daemon(self, antseed_module):
+        probed, launched = [], []
+
+        result = antseed_module.ensure_antseed_daemon(
+            probe=lambda url: probed.append(url) or False,
+            spawn=self._recorder(launched),
+            env={"ANTSEED_BASE_URL": "http://10.0.0.5:9000"},
+        )
+
+        assert result is False and launched == []
+        assert probed == []  # not even asked: somebody else's proxy is not ours to start
+
+    def test_the_daemon_starts_where_the_profile_will_dial(self, antseed_module):
+        launched = []
+
+        antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False,
+            spawn=self._recorder(launched),
+            env={"ANTSEED_BASE_URL": "http://127.0.0.1:9999"},
+        )
+
+        assert launched == ["antseed buyer start --port 9999"]
+
+    def test_the_opt_out_keeps_the_manual_step_manual(self, antseed_module):
+        launched = []
+
+        assert antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=self._recorder(launched),
+            env={"ANTSEED_AUTOSTART": "0"}) is False
+        assert launched == []
+        assert antseed_module.antseed_autostart_enabled({}) is True
+        assert antseed_module.antseed_autostart_enabled({"ANTSEED_AUTOSTART": "false"}) is False
+
+    def test_the_cli_ladder_is_the_one_the_balance_read_uses(self, antseed_module):
+        """A machine with Node but no global install starts through npx, and
+        ``ANTSEED_CLI_COMMAND`` — the same override the balance read honors — wins over both."""
+        launched = []
+
+        antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=self._recorder(launched, ok=False), env={})
+
+        assert launched == [
+            "antseed buyer start --port 8377",
+            "npx -y @antseed/cli buyer start --port 8377",
+        ]
+
+        launched.clear()
+        antseed_module._AUTOSTART["attempted_at"] = 0.0  # the failed pair above throttles
+        antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False,
+            spawn=self._recorder(launched),
+            env={"ANTSEED_CLI_COMMAND": "/opt/antseed/bin/antseed"},
+        )
+
+        assert launched == ["/opt/antseed/bin/antseed buyer start --port 8377"]
+        assert antseed_module.antseed_cli_commands({}) == ("antseed", "npx -y @antseed/cli")
+        assert antseed_module.antseed_cli_commands({"ANTSEED_CLI_COMMAND": " x "}) == ("x",)
+
+    def test_one_launch_per_window_so_the_askers_cannot_storm(self, antseed_module):
+        """Client construction and the footer's refresh both ask; the daemon gets one try."""
+        launched = []
+        spawn = self._recorder(launched)
+        now = [100.0]
+        later = antseed_module.AUTOSTART_MIN_INTERVAL_S + 0.1
+
+        first = antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=spawn, clock=lambda: now[0], env={})
+        again = antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=spawn, clock=lambda: now[0], env={})
+        after = antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=spawn, clock=lambda: now[0] + later, env={})
+
+        assert (first, again, after) == (False, False, False)
+        assert len(launched) == 2  # the burst collapsed; a daemon still down is retried
+
+    def test_a_launched_daemon_reads_as_starting_rather_than_absent(self, antseed_module):
+        balance = antseed_module.AntseedBalance(available_usd=4.55, connection_state="idle")
+
+        assert antseed_module.antseed_status_text("m", balance, daemon_reachable=False) == (
+            "[Antseed] m · $4.55 USDC left · daemon down"
+        )
+
+        antseed_module.ensure_antseed_daemon(
+            probe=lambda _url: False, spawn=self._recorder([]), env={})
+
+        assert antseed_module.antseed_daemon_starting() is True
+        assert antseed_module.antseed_status_text("m", balance, daemon_reachable=False) == (
+            "[Antseed] m · $4.55 USDC left · starting daemon…"
+        )
+        # A live daemon's own word for what it is doing, and only then (idle means "no peer
+        # pinned yet", which is not a problem worth the pixels while the port is closed).
+        assert antseed_module.antseed_status_text("m", balance, daemon_reachable=True) == (
+            "[Antseed] m · $4.55 USDC left · buyer idle"
+        )
+
+    def test_the_footer_refresh_brings_back_a_daemon_closed_mid_session(
+        self, antseed_module, monkeypatch
+    ):
+        """The status refresh is the one thing that repeats all session, so it is the one
+        place that can notice a daemon the user closed and put it back."""
+        balance = antseed_module.AntseedBalance(available_usd=4.55, connection_state="idle")
+        launched = []
+        monkeypatch.setattr(antseed_module, "is_antseed_reachable", lambda *_a, **_k: False)
+        monkeypatch.setattr(antseed_module, "fetch_antseed_balance", lambda **_k: balance)
+        monkeypatch.setattr(antseed_module, "_spawn_detached",
+                            lambda command: launched.append(command) or True)
+        TestAntseedStatusLine._seed(antseed_module, 0.0, "")
+
+        line = antseed_module.antseed_status_line("m")  # no injected refresh: the real one
+
+        assert line == "[Antseed] m · checking balance…"
+        TestAntseedStatusLine._settle(antseed_module)
+        assert launched == ["antseed buyer start --port 8377"]
+        assert antseed_module._STATUS_CACHE["text"] == (
+            "[Antseed] m · $4.55 USDC left · starting daemon…"
+        )
+
+    def test_a_test_process_cannot_launch_a_daemon(self, antseed_module, monkeypatch):
+        spawned = []
+        monkeypatch.setattr(antseed_module.subprocess, "Popen",
+                            lambda *args, **kwargs: spawned.append(args) or None)
+
+        assert antseed_module.ensure_antseed_daemon(probe=lambda _url: False, env={}) is False
+
+        assert not any("buyer start" in str(args) for args in spawned)
+        assert antseed_module._AUTOSTART["started_at"] == 0.0  # nothing to report as starting
+
+    def test_building_the_client_is_what_starts_it(self, antseed_profile, monkeypatch):
+        """Client construction is the last moment before the first request, once per session."""
+        module = _loaded_plugin_module(antseed_profile)
+        launched = []
+        module._AUTOSTART.update({"attempted_at": 0.0, "started_at": 0.0})
+        monkeypatch.setattr(module, "is_antseed_reachable", lambda *_a, **_k: False)
+        monkeypatch.setattr(module, "_spawn_detached",
+                            lambda command: launched.append(command) or True)
+
+        # None: the profile owns no transport, so the core builds the standard client next.
+        assert antseed_profile.create_client(
+            api_key="x", base_url="http://127.0.0.1:8377/v1") is None
+
+        assert launched == ["antseed buyer start --port 8377"]
+
+    def test_a_base_url_elsewhere_builds_the_client_without_touching_this_machine(
+        self, antseed_profile, monkeypatch
+    ):
+        module = _loaded_plugin_module(antseed_profile)
+        launched = []
+        module._AUTOSTART.update({"attempted_at": 0.0, "started_at": 0.0})
+        monkeypatch.setattr(module, "_spawn_detached",
+                            lambda command: launched.append(command) or True)
+
+        assert antseed_profile.create_client(
+            api_key="x", base_url="http://10.0.0.5:9000/v1") is None
+        assert launched == []

@@ -29,6 +29,14 @@ to stay hermetic).
 Every read here FAILS OPEN — a missing CLI, a stopped daemon, a timeout or
 malformed output all resolve to ``None``/``False`` so a caller can render
 "unavailable" instead of taking the session down over a decorative balance line.
+
+Hermes also *starts* the daemon (``ensure_antseed_daemon``): ``antseed buyer start``
+is the one manual step in this provider, and a stopped daemon does not look like a
+missing step — it looks like a broken provider, because the proxy address refuses the
+connection and the turn spends its retries on a daemon that was never there. The
+identity the daemon needs is already on the machine, so a session that finds nothing
+listening launches one itself (``ANTSEED_AUTOSTART=0`` opts out; the launch never waits,
+see ``ensure_antseed_daemon``).
 """
 
 from __future__ import annotations
@@ -37,11 +45,13 @@ import json
 import logging
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +80,25 @@ DEFAULT_BUDGET_MS = 8_000
 
 #: A liveness probe, not a read: the daemon answers in milliseconds or not at all.
 DEFAULT_PROBE_TIMEOUT = 1.5
+
+#: Set to 0/false/no/off to keep Hermes from ever starting the daemon itself — for a user
+#: who runs it under their own supervisor, and for whom the manual step is deliberate.
+ANTSEED_AUTOSTART_ENV = "ANTSEED_AUTOSTART"
+
+#: `antseed buyer start` is a whole process launch (Electron on the machine this was built
+#: on: 12.9 s to bind the proxy), so a launch is never waited on and never repeated inside
+#: this window — the calls that ask are per-session and periodic, not one-shot.
+AUTOSTART_MIN_INTERVAL_S = 10.0
+
+#: How long a launched daemon is still described as coming up rather than as absent.
+AUTOSTART_STARTING_S = 30.0
+
+#: A daemon console left to grow forever is a problem; 5 MB is weeks of it.
+DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+#: Launch bookkeeping, deliberately not part of ``_STATUS_CACHE`` (which is display state):
+#: ``attempted_at`` throttles launches, ``started_at`` is what a reading calls "starting".
+_AUTOSTART: dict[str, float] = {"attempted_at": 0.0, "started_at": 0.0}
 
 #: The catalog freepi-plus ships, generated from https://antseedstats.com/network.
 #: Used as the provider's `fallback_models`: the live list comes from the buyer
@@ -139,6 +168,156 @@ def is_antseed_reachable(
     return False
 
 
+def is_loopback_url(url: str) -> bool:
+    """Whether ``url`` points at this machine — the only place ``buyer start`` applies.
+
+    A non-loopback address is somebody else's proxy, or a tunnel to one: starting a local
+    daemon for it would be wrong, and silently so.
+    """
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def proxy_port(url: str) -> int | None:
+    """The explicit port in ``url``, or ``None`` where it carries none."""
+    try:
+        return urllib.parse.urlparse(url).port
+    except ValueError:  # a malformed port is not a port
+        return None
+
+
+# ── Starting the daemon ───────────────────────────────────────────────────────
+
+
+def antseed_autostart_enabled(env: dict[str, str] | None = None) -> bool:
+    """Whether Hermes may start the buyer daemon itself — on unless explicitly turned off."""
+    value = str((env if env is not None else _environ()).get(ANTSEED_AUTOSTART_ENV) or "").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def antseed_cli_commands(
+    env: dict[str, str] | None = None, command: str | None = None
+) -> tuple[str, ...]:
+    """The CLI invocations to try, in order.
+
+    ``command`` (an explicit caller override) wins, then ``ANTSEED_CLI_COMMAND``, then the
+    shared ladder: the global ``antseed`` binary before ``npx -y @antseed/cli``, for the
+    machine that has Node but no global install. One definition for the balance read and the
+    daemon launch, so both find the same CLI.
+    """
+    if command:
+        return (command,)
+    override = str((env if env is not None else _environ()).get("ANTSEED_CLI_COMMAND") or "").strip()
+    return (override,) if override else ANTSEED_CLI_COMMANDS
+
+
+def antseed_start_command(cli: str, *, base_url: str | None = None) -> str:
+    """``<cli> buyer start --port <port>`` — the daemon, as the launch command line.
+
+    The port is spelled out from the address this profile will dial, so a non-default
+    ``ANTSEED_BASE_URL`` (a second profile, a moved port) starts the daemon where it is
+    about to be looked for rather than at the CLI's own default.
+    """
+    port = proxy_port(base_url or antseed_base_url())
+    return f"{cli} buyer start --port {port}" if port else f"{cli} buyer start"
+
+
+def _daemon_log_path() -> Path:
+    """Where a launched daemon's console goes (``~/.antseed/buyer-daemon.log``).
+
+    Not discarded, because the daemon's console is where its peer and handshake failures are
+    legible — the diagnostics that explain a proxy that is up but not answering. Truncated
+    past :data:`DAEMON_LOG_MAX_BYTES` so it cannot grow without bound.
+    """
+    return antseed_data_dir() / "buyer-daemon.log"
+
+
+def _spawn_detached(command: str) -> bool:
+    """Run ``command`` in a session of its own so it outlives Hermes. Never raises.
+
+    ``shell=True`` for the same reason the balance read uses it: the fallback invocation is
+    the two-word ``npx -y @antseed/cli``, and on Windows the CLI resolves through a ``.cmd``
+    shim. A launched daemon that died with the CLI would be pointless, hence the detached
+    process group; on Windows it must also not steal the console the TUI is drawing on.
+
+    A test process never launches a real daemon (the repo's convention) — tests that cover
+    this path inject their own ``spawn``.
+    """
+    import os
+
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
+        logger.debug("antseed: not launching a daemon inside a test process")
+        return False
+
+    kwargs: dict[str, Any] = {"shell": True, "stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":  # pragma: no cover - platform flag only
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        log_path = _daemon_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.is_file() and log_path.stat().st_size > DAEMON_LOG_MAX_BYTES:
+            log_path.unlink()
+        with log_path.open("ab") as log:
+            subprocess.Popen(command, stdout=log, stderr=log, **kwargs)
+    except Exception as exc:  # no CLI, no permission, no data dir — all "cannot start"
+        logger.debug("antseed: could not launch %r: %s", command, exc)
+        return False
+    logger.info("antseed: launched the buyer daemon (%s)", command)
+    return True
+
+
+def antseed_daemon_starting(clock: Callable[[], float] | None = None) -> bool:
+    """Whether a daemon Hermes launched is still expected to be binding its proxy."""
+    started = float(_AUTOSTART.get("started_at") or 0.0)
+    return bool(started) and (clock or time.monotonic)() - started < AUTOSTART_STARTING_S
+
+
+def ensure_antseed_daemon(
+    *,
+    base_url: str | None = None,
+    env: dict[str, str] | None = None,
+    probe: Callable[[str], bool] | None = None,
+    spawn: Callable[[str], bool] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> bool:
+    """Whether the buyer proxy is being served right now, launching the daemon if it is not.
+
+    Returns immediately either way. ``antseed buyer start`` spends 10+ seconds before its
+    proxy binds (the CLI is Electron on the machine this was built on), which is far longer
+    than the client construction that calls this may block — so the daemon comes up while
+    the request that found the port closed is already in its retry backoff, which is what
+    turns a refused first turn into an answer. Callers that must know render
+    :func:`antseed_daemon_starting` in the meantime.
+
+    ``False`` therefore means "nothing answers here" — never "the launch failed", which is
+    indistinguishable from the outside and, either way, not something a turn can act on.
+    Never raises.
+    """
+    environ = env if env is not None else _environ()
+    if not antseed_autostart_enabled(environ):
+        return False
+    url = base_url or antseed_base_url(environ)
+    if not is_loopback_url(url):
+        return False
+    check = probe or is_antseed_reachable
+    if check(url):
+        return True
+    now = (clock or time.monotonic)()
+    if now - float(_AUTOSTART.get("attempted_at") or 0.0) < AUTOSTART_MIN_INTERVAL_S:
+        return False
+    _AUTOSTART["attempted_at"] = now
+    launcher = spawn or _spawn_detached
+    for cli in antseed_cli_commands(environ):
+        if launcher(antseed_start_command(cli, base_url=url)):
+            _AUTOSTART["started_at"] = now
+            return False
+    return False
+
+
 #: How the buyer daemon locates its on-chain identity, in Antseed's own order
 #: (https://antseed.com/docs/buyer-config/): the environment variable first, then
 #: ``identity.key`` inside the data directory.
@@ -193,11 +372,7 @@ def fetch_antseed_balance(
     import time
 
     environ = env if env is not None else _environ()
-    if command:
-        commands: tuple[str, ...] = (command,)
-    else:
-        override = str(environ.get("ANTSEED_CLI_COMMAND") or "").strip()
-        commands = (override,) if override else ANTSEED_CLI_COMMANDS
+    commands = antseed_cli_commands(environ, command)
 
     deadline = time.monotonic() + max(budget_ms, 1) / 1000.0
     for cli in commands:
@@ -326,17 +501,94 @@ def short_model_id(model_id: str, max_length: int = 40) -> str:
     return label
 
 
-def antseed_status_text(model_id: str, balance: AntseedBalance | None) -> str:
-    """The one-line Antseed reading, ported from freepi-plus' status line."""
+def antseed_status_text(
+    model_id: str, balance: AntseedBalance | None, *, daemon_reachable: bool | None = None
+) -> str:
+    """The one-line Antseed reading, ported from freepi-plus' status line.
+
+    ``daemon_reachable`` is the proxy's liveness, which the balance cannot tell: the deposits
+    are on-chain state the CLI reads while the proxy is stopped, so a funded buyer with no
+    daemon would otherwise read as healthy right up until the user sends a message and the
+    connection is refused. ``None`` means "not checked" and says nothing about the daemon.
+    """
     label = f"[Antseed] {short_model_id(model_id)}"
     if balance is None:
         return f"{label} · balance unavailable"
     parts = [f"{format_usdc(balance.available_usd)} USDC left"]
     if (balance.reserved_usd or 0) > 0:
         parts.append(f"{format_usdc(balance.reserved_usd)} reserved")
-    if balance.connection_state and balance.connection_state != "connected":
+    if daemon_reachable is False:
+        parts.append("starting daemon…" if antseed_daemon_starting() else "daemon down")
+    elif balance.connection_state and balance.connection_state != "connected":
+        # A live daemon's own word for what it is doing; meaningless while the port is closed.
         parts.append(f"buyer {balance.connection_state}")
     return f"{label} · {' · '.join(parts)}"
+
+
+def antseed_status_pending(model_id: str) -> str:
+    """Shown while the (cached, asynchronous) balance read is in flight."""
+    return f"[Antseed] {short_model_id(model_id)} · checking balance…"
+
+
+#: How long a reading stays fresh, ported from freepi-plus: a balance is a process spawn plus
+#: an on-chain round trip, so it is read at most once a minute — and a *failure* is retried
+#: after 15 s instead, so a daemon started moments later shows up.
+STATUS_TTL_S = 60.0
+STATUS_FAILURE_TTL_S = 15.0
+
+#: The cached reading and the in-flight guard: one refresh at a time, whichever surface asked.
+_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "text": "", "in_flight": False}
+
+
+def antseed_status_line(
+    model_id: str,
+    *,
+    ttl_s: float = STATUS_TTL_S,
+    failure_ttl_s: float = STATUS_FAILURE_TTL_S,
+    clock: Callable[[], float] | None = None,
+    refresh: Callable[[], str] | None = None,
+) -> str:
+    """The one-line Antseed reading, refreshed in the background — never blocking.
+
+    A footer repaints on every keystroke, so this returns the last reading immediately and
+    runs the actual read on a daemon thread, landing on a later repaint. Until the first one
+    arrives it says so (``checking balance…``), exactly as freepi-plus does.
+
+    ``clock``/``refresh`` are injectable so a test can drive the TTLs without a daemon.
+    """
+    import threading
+    import time
+
+    now = (clock or time.monotonic)()
+    cached_text = str(_STATUS_CACHE.get("text") or "")
+    # ``at`` is 0.0 until the first read returns; after that it timestamps the *outcome*,
+    # successful or not, which is what decides how soon the next read may run.
+    last = float(_STATUS_CACHE.get("at") or 0.0)
+    if last and now - last < (ttl_s if cached_text else failure_ttl_s):
+        return cached_text or antseed_status_pending(model_id)
+    if not _STATUS_CACHE.get("in_flight"):
+        _STATUS_CACHE["in_flight"] = True
+
+        def read() -> str:
+            reachable = is_antseed_reachable()
+            if not reachable:
+                # This refresh is the one thing that repeats all session, so it is where a
+                # daemon the user closed is noticed — and brought back. The port is known
+                # closed here, so the launch skips its own probe.
+                ensure_antseed_daemon(probe=lambda _url: False)
+            return antseed_status_text(
+                model_id, fetch_antseed_balance(), daemon_reachable=reachable
+            )
+
+        def _refresh() -> None:
+            try:
+                text = (refresh or read)()
+            except Exception:
+                text = ""  # a failed read is remembered briefly, never raised into the footer
+            _STATUS_CACHE.update({"at": (clock or time.monotonic)(), "text": text, "in_flight": False})
+
+        threading.Thread(target=_refresh, name="antseed-status", daemon=True).start()
+    return cached_text or antseed_status_pending(model_id)
 
 
 def antseed_unavailable_reason(*, daemon_reachable: bool | None = None) -> str:

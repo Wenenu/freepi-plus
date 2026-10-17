@@ -163,6 +163,18 @@ class ProviderProfile:
         """
         return None
 
+    def status_bar_segment(self, *, model_id: str | None = None) -> str | None:
+        """A short provider-specific segment for the CLI status bar, or ``None``.
+
+        The one thing the CLI footer cannot answer for itself: how much inference this
+        provider has left behind the model it is already showing (Antseed's USDC balance, a
+        quota, a credit). Rendered as one gated field — ``display.status_bar.fields:`` — and
+        repainted with the rest of the bar, so an implementation owns its own caching and
+        must return promptly: a reading behind a subprocess or a network call belongs in a
+        background refresh with the last value returned in the meantime.
+        """
+        return None
+
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
 

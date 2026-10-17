@@ -228,6 +228,9 @@ class CLIStatusBarMixin:
             "active_background_subagents": 0,
             "battery_label": "",
             "battery_category": "dim",
+            # The active provider's own segment (Antseed's USDC balance, say); empty unless
+            # that provider implements the hook — see hermes_cli/status_bar_provider.py.
+            "provider_segment": "",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
             "goal_active": False,
@@ -239,6 +242,18 @@ class CLIStatusBarMixin:
 
             snapshot["focus_label"] = focus_statusbar_segment(
                 bool(getattr(self, "_focus_view_enabled", False)))
+        except Exception:
+            pass
+
+        # Provider-owned segment (Antseed's balance) — opt-in like git_branch, because the
+        # hook may start a background refresh and nobody should pay for a segment they hid.
+        try:
+            _provider_fields = self._get_status_bar_field_set()
+            if _provider_fields is None or "provider" in _provider_fields:
+                from hermes_cli.status_bar_provider import provider_status_segment
+
+                snapshot["provider_segment"] = provider_status_segment(
+                    getattr(self, "provider", None), model_name)
         except Exception:
             pass
 
@@ -989,10 +1004,11 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        Fields: model, provider (the active provider's own segment), context_detail,
+        context_pct, cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
+        bg_subagents, goal, git_branch (opt-in only), duration, prompt_elapsed,
+        idle_since, focus, yolo, stash, battery, title, total_tokens (opt-in only).
+        Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1039,6 +1055,10 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+        # Directly after the model, where freepi's footer line reads it.
+        provider_segment = snapshot.get("provider_segment") or ""
+        if provider_segment:
+            add("provider", _DIM, provider_segment)
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
