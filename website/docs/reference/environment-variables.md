@@ -26,6 +26,11 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_CODEX_BASE_URL` | Route the `openai-codex` (ChatGPT subscription) provider through a proxy instead of the default Codex backend. Applies everywhere the credential is used: pool resolution, auxiliary/raw clients, and 401/429 credential rotation. `model.base_url` under `model.provider: openai-codex` is the secondary override when this is unset. |
 | `LM_API_KEY` | API key for LM Studio (`lmstudio` provider). Often a placeholder for local servers |
 | `LM_BASE_URL` | LM Studio base URL (default: `http://localhost:1234/v1`) |
+| `ANTSEED_API_KEY` | Credential slot for the `antseed` provider. Any value works: the buyer daemon authenticates by the machine's buyer identity, not by a client key |
+| `ANTSEED_BASE_URL` | Antseed buyer proxy base URL (default: `http://127.0.0.1:8377/v1`). A non-loopback value is dialed but never started locally |
+| `ANTSEED_AUTOSTART` | `0`/`false` keeps the buyer daemon manual. Otherwise a session that finds nothing listening on the proxy address launches `antseed buyer start` itself |
+| `ANTSEED_CLI_COMMAND` | CLI used for the daemon launch and the USDC balance read (default: `antseed`, then `npx -y @antseed/cli`) |
+| `ANTSEED_IDENTITY_HEX` | Buyer identity the daemon should use, checked before `~/.antseed/identity.key`. Hermes reports which source is in use and never reads the key material |
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API — first priority (OAuth `gho_*` or fine-grained PAT `github_pat_*`; classic PATs `ghp_*` are **not supported**) |
 | `GH_TOKEN` | GitHub token — second priority for Copilot (also used by `gh` CLI) |
 | `GITHUB_TOKEN` | GitHub token — third priority for Copilot |

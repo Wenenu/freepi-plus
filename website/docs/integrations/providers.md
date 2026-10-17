@@ -58,6 +58,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **Antseed** | `hermes model` → "Antseed" (provider: `antseed`; P2P inference paid in USDC from a local buyer daemon — Hermes starts the daemon for you unless `ANTSEED_AUTOSTART=0`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 Both built-in OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks, skills-hub lookups and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key; one-shots with no live session at all, such as Desktop commit-message generation from the review panel, send a fresh ephemeral key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
@@ -1018,6 +1019,28 @@ hermes config set model.lmstudio_load_mode explicit
 ```
 
 **Tool calling:** Supported since LM Studio 0.3.6. Models with native tool-calling training (Qwen 2.5, Llama 3.x, Mistral, Hermes) are auto-detected and shown with a tool badge. Other models use a generic fallback that may be less reliable.
+
+---
+
+### Antseed — P2P Inference Paid in USDC
+
+[Antseed](https://antseed.com) is a decentralized inference network: you deposit USDC once (`antseed buyer deposit`) and a local **buyer daemon** (`antseed buyer start`) serves an OpenAI-compatible proxy on `127.0.0.1:8377`, routing each request to a peer and metering it against that deposit. Models come from the network, so the picker is long and priced per million tokens.
+
+Select it with `hermes model` → "Antseed". There is no API key to enter — the daemon authenticates with the buyer identity already on the machine (`~/.antseed/identity.key`, or `ANTSEED_IDENTITY_HEX`) — and the provider is never auto-detected from the environment, so an old `ANTSEED_API_KEY` cannot hijack your inference.
+
+**Hermes starts the daemon for you.** The daemon is a 10+ second process launch, and without it the provider does not read as "a step you skipped" — it reads as broken, because the port refuses the connection. So a session that finds nothing listening on the proxy address launches `antseed buyer start` itself (once per session, and again from the status bar if the daemon goes away mid-conversation), then lets the daemon bind while the refused first request retries. To keep the daemon strictly manual — a supervisor, a different buyer, a shared machine — set:
+
+```bash
+ANTSEED_AUTOSTART=0          # in ~/.hermes/.env
+```
+
+Related settings:
+
+- `ANTSEED_BASE_URL` — point at a buyer proxy that is not the loopback default (another host, another port); a non-loopback address is never started locally.
+- `ANTSEED_CLI_COMMAND` — the CLI to run for the daemon launch and the balance read, for an install that is not on `PATH`. Otherwise `antseed`, then `npx -y @antseed/cli`.
+- A launched daemon's console is appended to `~/.antseed/buyer-daemon.log` (truncated past 5 MB), which is where peer and handshake failures are legible.
+
+With `display.status_bar.fields` including `provider`, the footer shows the live reading — `[Antseed] <model> · $5.55 USDC left` — and says `daemon down` or `starting daemon…` when the proxy is not answering, because the USDC balance is on-chain state that reads fine while the daemon is stopped. `/usage` shows the same balance as rows, with the reserved amount and deposit address.
 
 ---
 
