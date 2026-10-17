@@ -192,6 +192,68 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_402_route_named_peer_fault_is_not_the_callers_billing(self):
+        """Antseed's buyer proxy relays a peer's dead upstream credit as a 402.
+
+        The buyer's deposit and the shared loopback credential are both healthy; the peer is
+        what ran out. Classified as billing, one bad peer ended the turn non-retryably with
+        copy about the user's own balance — and benched a good key on the way out.
+        """
+        e = MockAPIError(
+            "Error code: 402 - peer could not complete the request",
+            status_code=402,
+            body={"error": {
+                "type": "upstream_error",
+                "code": "upstream_credit_unavailable",
+                "message": (
+                    "Oops, peer could not complete the request.\n"
+                    "Antseed is a peer-to-peer network. Try another peer or use Auto routing."
+                ),
+                "antseed_fault": "peer",
+                "antseed_pinned": False,
+                "peer_status": 402,
+            }},
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek-v4.1-flash",
+                                    base_url="http://127.0.0.1:8377/v1")
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+        assert result.billing_unverified is False
+
+    def test_402_bare_peer_fault_prose_is_not_the_callers_billing(self):
+        """The same peer fault with no structured code — the shape that actually reaches the
+        user. The proxy's prose is the only signal; read as billing it aborts a turn whose
+        deposit is untouched and rotates away the loopback key the whole route shares."""
+        prose = (
+            "Oops, peer could not complete the request.\n"
+            "Antseed is a peer-to-peer network. Try another peer or use Auto routing.\n"
+            'Original Response: {"message":"Upstream credit is unavailable. Retry later or '
+            'select another service.","status":402}'
+        )
+        for label, body in (
+            ("str(error) only", None),
+            ("bodyless message field", {"message": "Upstream credit is unavailable. Retry later "
+                                                  "or select another service.", "status": 402}),
+        ):
+            e = MockAPIError(f"HTTP 402: {prose}", status_code=402, body=body)
+            result = classify_api_error(e, provider="custom", model="deepseek-v4.1-flash",
+                                        base_url="http://127.0.0.1:8377/v1")
+            assert result.reason == FailoverReason.overloaded, label
+            assert result.retryable is True, label
+            assert result.should_rotate_credential is False, label
+
+    def test_402_billing_code_stays_billing(self):
+        """The route-fault rung reads one code only: a real credit wall on a 402 still bills."""
+        e = MockAPIError(
+            "Payment Required",
+            status_code=402,
+            body={"error": {"code": "insufficient_credits", "message": "Payment Required"}},
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
 
 
 

@@ -1087,6 +1087,36 @@ def _status_429(c: _Ctx) -> Verdict:
     return _V_RATE_LIMIT
 
 
+# Structured codes a *route* puts on a 402 when the fault is its own upstream, not the caller's
+# account — a P2P/aggregator proxy relaying "this peer's upstream is out of credit, try another
+# peer". The deposit and the credential are healthy, and the route re-picks a peer on the next
+# attempt, so the recovery is a retry: never credential rotation (which would bench a good key for
+# an hour) and never the billing copy, which sends the user to top up an untouched balance. Same
+# treatment as a relayed upstream 403 (#75388, ``_403_TRANSIENT_CODES``). Antseed's buyer proxy is
+# the observed producer: ``{"error": {"type": "upstream_error", "code":
+# "upstream_credit_unavailable", "antseed_fault": "peer", "peer_status": 402}}``.
+_402_ROUTE_FAULT_CODES = frozenset({"upstream_credit_unavailable"})
+
+# The same fault when the route sends no structured code, only its own prose. Antseed's buyer
+# proxy answers a dead peer's upstream credit with: "Oops, peer could not complete the request. /
+# Antseed is a peer-to-peer network. Try another peer or use Auto routing. / Original Response:
+# {\"message\": \"Upstream credit is unavailable. Retry later or select another service.\"}".
+# Body-less shapes are the common case, and without this rung they land on the billing default
+# above — the same wrong abort, plus credential rotation that benches a healthy key.
+_402_ROUTE_FAULT_PATTERNS = (
+    "peer could not complete", "try another peer", "use auto routing",
+    "upstream credit is unavailable",
+)
+
+
+def _status_402(c: _Ctx) -> Verdict:
+    if c.code in _402_ROUTE_FAULT_CODES:
+        return _V_OVERLOADED
+    if any(p in c.msg for p in _402_ROUTE_FAULT_PATTERNS):
+        return _V_OVERLOADED
+    return _classify_402(c.msg, dict)
+
+
 def _status_5xx(c: _Ctx) -> Verdict:
     # Request-validation errors as 5xx (codex.nekos.me) fail fast instead of
     # retry-flooding — unless the parameter was injected server-side.
@@ -1224,7 +1254,7 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
+    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: _status_402,
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
