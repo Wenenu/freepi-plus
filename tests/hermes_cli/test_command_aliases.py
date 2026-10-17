@@ -75,11 +75,18 @@ def test_posix_alias_hands_argv_and_exit_code_to_its_command(checkout, out_dir, 
 
 @pytest.mark.platforms("windows", "posix")
 def test_alias_never_takes_over_a_command_it_did_not_write(checkout, out_dir):
+    """A command of that name from anywhere else is left exactly where it is.
+
+    On Windows that is the ``.cmd`` — the shell twin is a *different* command for a
+    different shell, so it stays ours to publish (the same split npm ships).
+    """
     target = out_dir / alias_name()
     user_owned = "@echo off\r\nexit /b 19\r\n" if os.name == "nt" else "#!/bin/sh\nexit 19\n"
     target.write_bytes(user_owned.encode("utf-8"))
-    assert _launchers.publish_command_alias(ALIAS, checkout, out_dir, [str(checkout / "hermes")]) is None
+    published = _launchers.publish_command_alias(ALIAS, checkout, out_dir, [str(checkout / "hermes")])
+
     assert target.read_bytes() == user_owned.encode("utf-8")
+    assert published is None if os.name != "nt" else published == out_dir / ALIAS
 
 
 @pytest.mark.platforms("windows", "posix")
@@ -121,6 +128,9 @@ def test_dev_mode_publishes_only_the_alias_bound_to_the_checkout(tmp_path):
     run = subprocess.run([sys.executable, "-I", str(repo / "hermes_cli/_launchers.py"), str(out), "--dev"],
                          cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
-    published = out / alias_name()
-    assert [path.name for path in out.iterdir()] == [published.name]
-    assert _launchers._alias_command(published) == [str(python), str(repo / "hermes")]
+    expected = {alias_name()} if os.name == "nt" else {ALIAS}
+    if os.name == "nt":
+        expected.add(ALIAS)  # plus the shell twin cmd.exe cannot run
+    assert {path.name for path in out.iterdir()} == expected
+    for name in expected:
+        assert _launchers._alias_command(out / name) == [str(python), str(repo / "hermes")]

@@ -604,11 +604,23 @@ def _alias_command(target: Path) -> list[str] | None:
     return [token.strip('"') for token in tokens] if quoted else tokens
 
 
-def _alias_body(command: list[str]) -> bytes:
+def _alias_body(command: list[str], *, shell: bool) -> bytes:
     """A forwarder carrying exactly *command*, with no interpreter pin of its own."""
-    if _is_windows():
+    if not shell:
         return ("@echo off\r\n" + " ".join(f'"{token}"' for token in command) + " %*\r\n").encode("utf-8")
     return ("#!/bin/sh\nexec " + shlex.join(command) + ' "$@"\n').encode("utf-8")
+
+
+def _alias_targets(out_dir: Path, name: str) -> tuple[Path, ...]:
+    """The alias files for *out_dir*, primary first.
+
+    Windows gets the ``.cmd`` cmd.exe and PowerShell run *and* the extensionless shell
+    forwarder Git Bash and WSL need: MSYS resolves ``.exe`` by itself but never a ``.cmd``,
+    so without the twin the alias would work in one half of a Windows user's shells.
+    """
+    if _is_windows():
+        return (Path(out_dir) / f"{name}.cmd", Path(out_dir) / name)
+    return (Path(out_dir) / name,)
 
 
 def _under(root: Path, token: str) -> bool:
@@ -632,24 +644,28 @@ def publish_command_alias(name: str, repo_root: Path, out_dir: Path, command: li
     out_dir = Path(out_dir)
     if _is_windows() and (out_dir / f"{name}.exe").exists():
         return None  # Windows runs the .exe; a .cmd beside it would only be dead weight
-    target = out_dir / (f"{name}.cmd" if _is_windows() else name)
-    if target.exists() or target.is_symlink():
-        existing = _alias_command(target)
-        if existing is None or not all(_under(root, token) for token in existing):
-            return None
-    body = _alias_body(command)
-    try:
-        if target.read_bytes() == body:
-            return target  # already this exact forwarder: leave its mtime alone
-    except OSError:
-        pass
+    published: list[Path] = []
+    for target in _alias_targets(out_dir, name):
+        if target.exists() or target.is_symlink():
+            existing = _alias_command(target)
+            if existing is None or not all(_under(root, token) for token in existing):
+                continue  # a command of that name we did not write: left where it is
+        body = _alias_body(command, shell=target.suffix != ".cmd")
+        try:
+            if target.read_bytes() == body:
+                published.append(target)  # already this exact forwarder: keep its mtime
+                continue
+        except OSError:
+            pass
 
-    def write(staging: Path) -> None:
-        staging.write_bytes(body)
-        if not _is_windows():
-            staging.chmod(0o755)
+        def write(staging: Path, body: bytes = body, shell: bool = target.suffix != ".cmd") -> None:
+            staging.write_bytes(body)
+            if shell:
+                staging.chmod(0o755)
 
-    return _write_atomic(target, write)
+        if (path := _write_atomic(target, write)) is not None:
+            published.append(path)
+    return published[0] if published else None
 
 
 def _published_launcher(local: Path, name: str) -> Path | None:
